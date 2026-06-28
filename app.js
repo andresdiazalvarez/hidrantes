@@ -31,7 +31,12 @@ const DEFECTS = [
 ];
 const PHOTO_DEFECTS = {
   hidrante: ['No abre llave.', 'Faltan racor.', 'Falta tapón.', 'Falta señal.', 'En mal estado.'],
-  armario: ['Armario en mal estado.', 'Armario no abre.', 'Falta llave hidrante.', 'Falta mangueras.', 'Falta racores.', 'Falta lanzas.']
+  armario: [
+    'Armario en mal estado.', 'Armario no abre.', 'Falta llave hidrante.',
+    'Falta mangueras 45.', 'Falta mangueras 70.',
+    'Falta racores 45.', 'Falta racores 70.',
+    'Falta lanzas 45.', 'Falta lanzas 70.', 'Falta derivación.'
+  ]
 };
 const PHOTO_TYPE_LABELS = {
   hidrante: { singular: 'Hidrante', plural: 'Hidrantes', record: 'REGISTRO HIDRANTE' },
