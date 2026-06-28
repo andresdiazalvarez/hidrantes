@@ -21,4 +21,4 @@ La app funciona bien tanto en:
 - No necesita servidor ni base de datos.
 - Los registros y fotos se guardan en el navegador del dispositivo con IndexedDB.
 - Para instalarla como PWA, abre la URL publicada desde Chrome/Edge y usa `Instalar`.
-- Si cambias archivos y el movil sigue mostrando una version antigua, abre la app una vez con conexion y recarga. El service worker usa la cache `hidrantes-github-pages-v2`.
+- Si cambias archivos y el movil sigue mostrando una version antigua, abre la app una vez con conexion y recarga. El service worker usa la cache `hidrantes-github-pages-v3`.

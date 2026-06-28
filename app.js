@@ -7,6 +7,7 @@ let currentPhotoType = '';
 let photoRecordPhotos = ['', ''];
 let photoRecordsCache = [];
 let selectedPhotoRecord = null;
+let editingPhotoRecordId = '';
 let deferredInstall;
 
 const CHATGPT_IMPORT_PROMPT = `Convierte todos los extintores que te he dictado en un JSON válido para mi aplicación. Devuelve exclusivamente el JSON, sin explicaciones y sin bloques Markdown. Debe ser una lista con este formato exacto:
@@ -29,7 +30,7 @@ const DEFECTS = [
   'Extintor sin presión.', 'Extintor en el suelo.', 'Cristal del extintor ausente o roto.'
 ];
 const PHOTO_DEFECTS = {
-  hidrante: ['No abre llave.', 'Faltan racores.', 'Falta señal.', 'Mal estado.'],
+  hidrante: ['No abre llave.', 'Faltan racor.', 'Falta tapón.', 'Falta señal.', 'En mal estado.'],
   armario: ['Armario en mal estado.', 'Armario no abre.', 'Falta llave hidrante.', 'Falta mangueras.', 'Falta racores.', 'Falta lanzas.']
 };
 const PHOTO_TYPE_LABELS = {
@@ -241,12 +242,24 @@ function setPreview(element, dataUrl) {
   element.style.backgroundImage = dataUrl ? `url(${dataUrl})` : '';
 }
 
-function openPhotoForm(type) {
+function openPhotoForm(type, record = null) {
   currentPhotoType = type;
-  photoRecordPhotos = ['', ''];
+  editingPhotoRecordId = record?.id || '';
+  photoRecordPhotos = [...(record?.photos || []), '', ''].slice(0, 2);
   $('photoFormTitle').textContent = photoTypeLabel(type).singular;
   $('photoRecordForm').reset();
   $('photoDefectList').innerHTML = PHOTO_DEFECTS[type].map(defect => `<label><input type="checkbox" name="photoDefect" value="${escapeHtml(defect)}"><span>${escapeHtml(defect.replace(/\.$/, ''))}</span></label>`).join('');
+  if (record) {
+    $('photoBuilding').value = record.building || '';
+    $('photoNumber').value = record.number || '';
+    $('photoOther1').value = record.other1 || '';
+    $('photoOther2').value = record.other2 || '';
+    $('photoOther3').value = record.other3 || '';
+    $('photoObservation').value = record.observation || '';
+    const savedDefects = new Set(record.defects || []);
+    document.querySelectorAll('input[name="photoDefect"]').forEach(input => input.checked = savedDefects.has(input.value));
+  }
+  $('photoRecordSubmit').textContent = record ? 'Guardar cambios' : 'Guardar ficha';
   document.querySelectorAll('.record-photo-input').forEach(input => { input.value = ''; });
   refreshRecordPhotoPreviews();
   showView('photoFormView');
@@ -274,7 +287,7 @@ function renderPhotoRecords() {
     const observation = record.observation ? escapeHtml(record.observation) : '—';
     const photos = (record.photos || []).filter(Boolean).length;
     const date = record.createdAt ? new Date(record.createdAt).toLocaleDateString('es-ES') : '—';
-    return `<tr><td>${escapeHtml(record.building)}</td><td><strong>${escapeHtml(record.number)}</strong></td><td>${escapeHtml(record.other1 || '—')}</td><td>${escapeHtml(record.other2 || '—')}</td><td>${defects}</td><td>${observation}</td><td>${photos}</td><td>${date}</td><td><button type="button" class="view-record" data-record-id="${escapeHtml(record.id)}">Ver</button></td></tr>`;
+    return `<tr><td>${escapeHtml(record.building)}</td><td><strong>${escapeHtml(record.number)}</strong></td><td>${escapeHtml(record.other1 || '—')}</td><td>${escapeHtml(record.other2 || '—')}</td><td>${escapeHtml(record.other3 || '—')}</td><td>${defects}</td><td>${observation}</td><td>${photos}</td><td>${date}</td><td><button type="button" class="view-record" data-record-id="${escapeHtml(record.id)}">Ver</button></td></tr>`;
   }).join('');
 }
 
@@ -289,6 +302,7 @@ function openPhotoRecordDetail(id) {
   $('photoDetailNumber').textContent = record.number || '—';
   $('photoDetailOther1').textContent = record.other1 || '—';
   $('photoDetailOther2').textContent = record.other2 || '—';
+  $('photoDetailOther3').textContent = record.other3 || '—';
   $('photoDetailObservation').textContent = record.observation || '—';
   $('photoDetailDate').textContent = record.createdAt ? new Date(record.createdAt).toLocaleString('es-ES') : '—';
   $('photoDetailDefects').innerHTML = (record.defects || []).length ? record.defects.map(defect => `<li>${escapeHtml(defect)}</li>`).join('') : '<li>Sin defectos marcados</li>';
@@ -483,7 +497,7 @@ async function generatePhotoRecordsExcel() {
     const typeName = photoTypeLabel(currentPhotoType).plural;
     const sheet = workbook.addWorksheet(typeName, { views: [{ state: 'frozen', ySplit: 1 }] });
     const defects = PHOTO_DEFECTS[currentPhotoType];
-    const headers = ['Fecha', 'Edificio', 'Número', 'Otro 1', 'Otro 2', ...defects.map(defect => defect.replace(/\.$/, '')), 'Observación', 'Foto 1', 'Foto 2'];
+    const headers = ['Fecha', 'Edificio', 'Número', 'Otro 1', 'Otro 2', 'Otro 3', ...defects.map(defect => defect.replace(/\.$/, '')), 'Observación', 'Foto 1', 'Foto 2'];
     sheet.addRow(headers);
     sheet.columns = headers.map((_, index) => ({ width: index === 0 ? 20 : index === 1 ? 25 : index === 2 ? 14 : index < 5 ? 18 : index >= headers.length - 2 ? 25 : 22 }));
     const header = sheet.getRow(1);
@@ -494,16 +508,16 @@ async function generatePhotoRecordsExcel() {
       cell.alignment = { vertical:'middle', horizontal:'center', wrapText:true };
       cell.border = { bottom:{style:'thin',color:{argb:'FF8C1515'}}, right:{style:'thin',color:{argb:'FF8C1515'}} };
     });
-    const photoStartIndex = 6 + defects.length;
+    const photoStartIndex = 7 + defects.length;
     photoRecordsCache.forEach(record => {
       const row = sheet.addRow([
         record.createdAt ? new Date(record.createdAt) : '', record.building || '', String(record.number || ''),
-        record.other1 || '', record.other2 || '', ...defects.map(defect => (record.defects || []).includes(defect) ? 'X' : ''), record.observation || '', '', ''
+        record.other1 || '', record.other2 || '', record.other3 || '', ...defects.map(defect => (record.defects || []).includes(defect) ? 'X' : ''), record.observation || '', '', ''
       ]);
       row.height = (record.photos || []).some(Boolean) ? 95 : 28;
       row.getCell(1).numFmt = 'dd/mm/yyyy hh:mm';
       row.eachCell({ includeEmpty:true }, (cell, columnNumber) => {
-        cell.alignment = { vertical:'top', horizontal: columnNumber >= 6 && columnNumber < photoStartIndex + 1 ? 'center' : 'left', wrapText:true };
+        cell.alignment = { vertical:'top', horizontal: columnNumber >= 7 && columnNumber < photoStartIndex + 1 ? 'center' : 'left', wrapText:true };
         cell.border = { bottom:{style:'thin',color:{argb:'FFDED7D1'}}, right:{style:'thin',color:{argb:'FFDED7D1'}} };
       });
       [0, 1].forEach(photoIndex => {
@@ -584,6 +598,10 @@ $('photoRecordsBody').onclick = event => {
   const button = event.target.closest('.view-record');
   if (button) openPhotoRecordDetail(button.dataset.recordId);
 };
+$('editPhotoRecord').onclick = () => {
+  if (!selectedPhotoRecord) return;
+  openPhotoForm(selectedPhotoRecord.type, selectedPhotoRecord);
+};
 $('deletePhotoRecord').onclick = async () => {
   if (!selectedPhotoRecord) return;
   const label = `${photoTypeLabel(selectedPhotoRecord.type).singular} ${selectedPhotoRecord.number}`;
@@ -607,18 +625,28 @@ document.querySelectorAll('.record-photo-input').forEach(input => input.onchange
 });
 $('photoRecordForm').onsubmit = async event => {
   event.preventDefault();
+  const previous = editingPhotoRecordId ? photoRecordsCache.find(record => record.id === editingPhotoRecordId) : null;
   const record = {
-    id: createId(), type: currentPhotoType,
+    id: editingPhotoRecordId || createId(), type: currentPhotoType,
     building: $('photoBuilding').value.trim(), number: $('photoNumber').value.trim(),
-    other1: $('photoOther1').value.trim(), other2: $('photoOther2').value.trim(),
+    other1: $('photoOther1').value.trim(), other2: $('photoOther2').value.trim(), other3: $('photoOther3').value.trim(),
     defects: [...document.querySelectorAll('input[name="photoDefect"]:checked')].map(input => input.value),
     observation: $('photoObservation').value.trim(),
-    photos: [...photoRecordPhotos], createdAt: new Date().toISOString()
+    photos: [...photoRecordPhotos], createdAt: previous?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString()
   };
   try {
     await savePhotoRecord(record);
-    showView('photoTypesView');
-    toast(`Ficha de ${photoTypeLabel(currentPhotoType).singular.toLowerCase()} guardada en el móvil`);
+    if (editingPhotoRecordId) {
+      selectedPhotoRecord = record;
+      photoRecordsCache = photoRecordsCache.map(item => item.id === record.id ? record : item);
+      renderPhotoRecords();
+      openPhotoRecordDetail(record.id);
+      toast('Registro modificado');
+    } else {
+      showView('photoTypesView');
+      toast(`Ficha de ${photoTypeLabel(currentPhotoType).singular.toLowerCase()} guardada en el móvil`);
+    }
+    editingPhotoRecordId = '';
   } catch { toast('No se pudo guardar la ficha en este dispositivo'); }
 };
 $('addBtn').onclick = () => openForm();
