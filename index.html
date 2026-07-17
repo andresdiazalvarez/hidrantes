@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#8a1538" />
+    <meta name="theme-color" content="#ff7900" />
     <title>Hidrantes</title>
-    <link rel="manifest" href="manifest.webmanifest?v=hidrantes-correctivos-v1" />
-    <link rel="stylesheet" href="styles.css?v=hidrantes-correctivos-v1" />
+    <link rel="manifest" href="manifest.webmanifest?v=hidrantes-correctivos-v2" />
+    <link rel="stylesheet" href="styles.css?v=hidrantes-correctivos-v2" />
   </head>
   <body>
     <header class="topbar">
@@ -17,10 +17,31 @@
     </header>
 
     <main>
-      <section id="homeView" class="hero">
+      <section id="typeView" class="hero">
         <p class="kicker">CONTROL DE HIDRANTES</p>
-        <h1>Listado, fotos e importaciÃ³n.</h1>
-        <p class="subtitle">Importa Excel, aÃ±ade solo registros nuevos, corrige datos, guarda fotos y descarga todo junto.</p>
+        <h1>Escoge equipo.</h1>
+        <p class="subtitle">Selecciona el tipo de elemento y entra al listado, fotos, importación y correctivos de ese grupo.</p>
+        <div class="typeGrid">
+          <button id="selectHidranteBtn" class="typeChoice">
+            <span>H</span>
+            <strong>Hidrante</strong>
+          </button>
+          <button id="selectArmarioBtn" class="typeChoice">
+            <span>A</span>
+            <strong>Armario</strong>
+          </button>
+          <button id="selectColumnaSecaBtn" class="typeChoice">
+            <span>CS</span>
+            <strong>Columna seca</strong>
+          </button>
+        </div>
+      </section>
+
+      <section id="homeView" class="hero hidden">
+        <button id="changeTypeBtn" class="back" type="button">← Cambiar equipo</button>
+        <p class="kicker">CONTROL DE HIDRANTES</p>
+        <h1 id="currentTypeTitle">Hidrante</h1>
+        <p id="currentTypeSubtitle" class="subtitle">Listado, fotos, importación y correctivos.</p>
 
         <div class="card">
           <button id="clearRecordsBtn" class="danger dangerTop">Eliminar todos los registros</button>
@@ -260,6 +281,7 @@
             <select id="modelo">
               <option value="Hidrante">Hidrante</option>
               <option value="Armario">Armario</option>
+              <option value="Columna seca">Columna seca</option>
             </select>
           </label>
           <label>Otro 1
@@ -317,9 +339,9 @@
       </section>
     </main>
 
-    <script src="exceljs.min.js?v=hidrantes-correctivos-v1"></script>
-    <script src="seed-data.js?v=hidrantes-correctivos-v1"></script>
-    <script src="app.js?v=hidrantes-correctivos-v1"></script>
+    <script src="exceljs.min.js?v=hidrantes-correctivos-v2"></script>
+    <script src="seed-data.js?v=hidrantes-correctivos-v2"></script>
+    <script src="app.js?v=hidrantes-correctivos-v2"></script>
   </body>
 </html>
 

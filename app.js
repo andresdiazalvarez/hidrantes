@@ -24,8 +24,19 @@ const DEFECTS_BY_TYPE = {
     "Falta lanzas 70.",
     "Falta derivación.",
   ],
+  columnaSeca: [
+    "Armario en mal estado.",
+    "Armario no abre.",
+    "Llave no abre.",
+    "Falta racores.",
+  ],
 };
-const defectOptions = [...DEFECTS_BY_TYPE.hidrante, ...DEFECTS_BY_TYPE.armario];
+const EQUIPMENT_TYPES = {
+  hidrante: "Hidrante",
+  armario: "Armario",
+  columnaSeca: "Columna seca",
+};
+const defectOptions = [...new Set([...DEFECTS_BY_TYPE.hidrante, ...DEFECTS_BY_TYPE.armario, ...DEFECTS_BY_TYPE.columnaSeca])];
 const reportDefectLabels = {};
 
 const fields = [
@@ -54,6 +65,7 @@ let serieVoiceRecognition = null;
 let serieVoiceActive = false;
 let serieVoiceParts = [];
 let serieVoiceDraft = "";
+let currentEquipmentType = "";
 
 const $ = (id) => document.getElementById(id);
 
@@ -81,7 +93,7 @@ function cleanRecord(record = {}) {
     edificio: safeText(record.edificio ?? record.edificioCodigo),
     cantidad: safeText(record.cantidad),
     ubicacion: safeText(record.ubicacion),
-    modelo: normalizeEquipmentType(record.modelo || record.tipo || record.tipoEquipo),
+    modelo: normalizeEquipmentType(record.modelo || record.tipo || record.tipoEquipo || currentEquipmentLabel()),
     numeroSerie: safeText(record.numeroSerie),
     fechaFabricacion: safeText(record.fechaFabricacion),
     fechaProximoRetimbrado: safeText(record.fechaProximoRetimbrado),
@@ -148,13 +160,35 @@ function truthyExcelValue(value) {
 
 function normalizeEquipmentType(value) {
   const key = normalizeHeader(value);
+  if (key.includes("columnaseca") || key.includes("columna")) return "Columna seca";
   if (key.includes("armario")) return "Armario";
   return "Hidrante";
 }
 
 function equipmentTypeKey(recordOrValue) {
   const value = typeof recordOrValue === "object" ? recordOrValue?.modelo : recordOrValue;
-  return normalizeEquipmentType(value).toLowerCase();
+  const type = normalizeEquipmentType(value);
+  if (type === "Columna seca") return "columnaSeca";
+  return type.toLowerCase();
+}
+
+function currentEquipmentLabel() {
+  return EQUIPMENT_TYPES[currentEquipmentType] || "Hidrante";
+}
+
+function currentRecords() {
+  if (!currentEquipmentType) return records;
+  return records.filter((record) => equipmentTypeKey(record) === currentEquipmentType);
+}
+
+function selectEquipmentType(type) {
+  currentEquipmentType = type;
+  const label = currentEquipmentLabel();
+  $("currentTypeTitle").textContent = label;
+  $("currentTypeSubtitle").textContent = `Listado, fotos, importación y correctivos de ${label.toLowerCase()}.`;
+  $("formTitle").textContent = `Editar ${label.toLowerCase()}`;
+  updateStats();
+  showView("home");
 }
 
 function normalizeDefectName(value) {
@@ -179,6 +213,8 @@ function normalizeDefectName(value) {
     ["faltalanzas45", "Falta lanzas 45."],
     ["faltalanzas70", "Falta lanzas 70."],
     ["faltaderivacion", "Falta derivación."],
+    ["llavenoabre", "Llave no abre."],
+    ["faltaracores", "Falta racores."],
     ...defectOptions.map((defect) => [normalizeHeader(defect), defect]),
   ]);
   return aliases.get(normalizeHeader(text)) || text;
@@ -321,14 +357,16 @@ async function saveRecords() {
 }
 
 function updateStats() {
-  const total = records.length;
-  const seen = records.filter((record) => record.visto).length;
+  const visibleRecords = currentRecords();
+  const total = visibleRecords.length;
+  const seen = visibleRecords.filter((record) => record.visto).length;
   $("totalCount").textContent = total;
   $("seenCount").textContent = seen;
   $("pendingCount").textContent = total - seen;
 }
 
 function showView(name) {
+  $("typeView").classList.toggle("hidden", name !== "type");
   $("homeView").classList.toggle("hidden", name !== "home");
   $("listView").classList.toggle("hidden", name !== "list");
   $("correctivosView").classList.toggle("hidden", name !== "correctivos");
@@ -356,6 +394,7 @@ function filteredRecords() {
   const sortOrder = $("sortOrder").value;
 
   const rows = records.filter((record) => {
+    if (currentEquipmentType && equipmentTypeKey(record) !== currentEquipmentType) return false;
     if (seenFilter === "seen" && !record.visto) return false;
     if (seenFilter === "pending" && record.visto) return false;
     if (filterEdificio && ![record.edificio, record.ubicacion].join(" ").toLowerCase().includes(filterEdificio)) return false;
@@ -415,6 +454,7 @@ function reportDefectKey(record) {
 
 function recordsWithCorrectivos() {
   return records
+    .filter((record) => !currentEquipmentType || equipmentTypeKey(record) === currentEquipmentType)
     .filter((record) => Array.isArray(record.defectos) && record.defectos.length)
     .map(cleanRecord)
     .sort((a, b) =>
@@ -536,10 +576,10 @@ function correctivosWordHtml() {
     h1 { text-align: center; font-size: 20pt; margin: 18pt 0 18pt; font-weight: 700; }
     .client { text-align: center; font-size: 16pt; font-weight: 700; margin: 0 0 18pt; }
     .meta { color: #555; font-size: 9pt; text-align: right; margin: 0 0 10pt; }
-    h2 { color: #8a1538; font-size: 14pt; margin: 22pt 0 6pt .2in; font-weight: 700; }
+    h2 { color: #df5600; font-size: 14pt; margin: 22pt 0 6pt .2in; font-weight: 700; }
     table { border-collapse: collapse; width: 100%; margin: 0 0 22pt; table-layout: fixed; }
     th, td { border: 1px solid #000; padding: 2pt 5pt; vertical-align: top; line-height: 1.05; }
-    th { background: #d9eaf7; text-align: left; font-weight: 700; }
+    th { background: #fff0db; text-align: left; font-weight: 700; }
     th:nth-child(1), td:nth-child(1) { width: 25%; }
     th:nth-child(2), td:nth-child(2) { width: 25%; }
     th:nth-child(3), td:nth-child(3) { width: 25%; }
@@ -1673,6 +1713,7 @@ function openForm(id = null) {
   $("formKicker").textContent = record ? "REGISTRO EXISTENTE" : "NUEVO REGISTRO";
   $("deleteBtn").classList.toggle("hidden", !record);
   for (const key of fields) $(key).value = safeText(record?.[key]);
+  if (!record) $("modelo").value = currentEquipmentLabel();
   $("visto").checked = Boolean(record?.visto);
   renderDefects(record?.defectos || []);
   const photos = Array.isArray(record?.photos) ? record.photos : ["", ""];
@@ -1770,6 +1811,7 @@ async function importExcelFile(file) {
   sheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
     const record = rowToImportedRecord(row.values, rowNumber, headerMap);
+    if (currentEquipmentType) record.modelo = currentEquipmentLabel();
     record.photos = photosByRow.get(rowNumber) || ["", ""];
     const hasData = [record.edificio, record.cantidad, record.ubicacion, record.modelo, record.numeroSerie].some((value) => safeText(value).trim());
     if (!hasData) return;
@@ -1870,6 +1912,10 @@ async function downloadExcel() {
 }
 
 function bindEvents() {
+  $("selectHidranteBtn").addEventListener("click", () => selectEquipmentType("hidrante"));
+  $("selectArmarioBtn").addEventListener("click", () => selectEquipmentType("armario"));
+  $("selectColumnaSecaBtn").addEventListener("click", () => selectEquipmentType("columnaSeca"));
+  $("changeTypeBtn").addEventListener("click", () => showView("type"));
   $("openListBtn").addEventListener("click", () => showView("list"));
   $("openCorrectivosBtn").addEventListener("click", () => showView("correctivos"));
   $("openChecklistBtn").addEventListener("click", () => showView("checklist"));
@@ -1943,6 +1989,7 @@ async function init() {
   await loadRecords();
   bindEvents();
   updateStats();
+  showView("type");
 }
 
 init().catch((error) => {

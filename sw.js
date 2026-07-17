@@ -1,4 +1,4 @@
-const CACHE_NAME = "hidrantes-correctivos-v1";
+const CACHE_NAME = "hidrantes-correctivos-v2";
 const ASSETS = [
   "./",
   "./index.html",
