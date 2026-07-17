@@ -1,243 +1,325 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="es">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-  <meta name="theme-color" content="#b91c1c">
-  <title>Hidrantes</title>
-  <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="icon.svg">
-  <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="photos.css">
-</head>
-<body>
-  <header class="app-header">
-    <div class="brand"><img src="icon.svg" alt=""><span>Hidrantes</span></div>
-    <button id="installBtn" class="ghost hidden">Instalar</button>
-  </header>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#8a1538" />
+    <title>Hidrantes</title>
+    <link rel="manifest" href="manifest.webmanifest?v=hidrantes-correctivos-v1" />
+    <link rel="stylesheet" href="styles.css?v=hidrantes-correctivos-v1" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <img src="icon.svg" alt="" />
+        <span>Hidrantes</span>
+      </div>
+    </header>
 
-  <main>
-    <section id="homeView" class="view active">
-      <div class="hero">
-        <span class="eyebrow">CONTROL DE HIDRANTES</span>
-        <h1>Un informe limpio,<br>desde el móvil.</h1>
-        <p>Fotografía, dicta y genera el Excel oficial sin volver a copiar los datos.</p>
-      </div>
-      <div class="card">
-        <label>Cliente <span>*</span><input id="client" placeholder="Ej.: D. Benito. Colegio" autocomplete="organization"></label>
-        <label>Operario <span>*</span><input id="operator" placeholder="Nombre del operario" autocomplete="name"></label>
-        <button id="startBtn" class="primary">Comenzar revisión</button>
-      </div>
-      <button id="photosBtn" class="wide-secondary photos-entry">📷 Fotos</button>
-      <button id="historyBtn" class="wide-secondary">Ver trabajos guardados <span id="historyCount">0</span></button>
-    </section>
+    <main>
+      <section id="homeView" class="hero">
+        <p class="kicker">CONTROL DE HIDRANTES</p>
+        <h1>Listado, fotos e importaciÃ³n.</h1>
+        <p class="subtitle">Importa Excel, aÃ±ade solo registros nuevos, corrige datos, guarda fotos y descarga todo junto.</p>
 
-    <section id="workView" class="view">
-      <div class="work-title">
-        <button class="back" data-view="homeView" aria-label="Volver">←</button>
-        <div><small id="workClient"></small><h2>Extintores <span id="equipmentCount">0</span></h2></div>
-      </div>
-      <div id="equipmentList" class="equipment-list"></div>
-      <button id="addBtn" class="primary sticky">＋ Añadir extintor</button>
-      <button id="importBtn" class="wide-secondary import-button">⇩ Importar desde ChatGPT</button>
-      <div class="actions">
-        <button id="downloadBtn" class="wide-secondary">Generar Excel oficial</button>
-        <button id="finishBtn" class="text-button">Finalizar y guardar trabajo</button>
-      </div>
-    </section>
+        <div class="card">
+          <button id="clearRecordsBtn" class="danger dangerTop">Eliminar todos los registros</button>
 
-    <section id="importView" class="view">
-      <div class="work-title">
-        <button class="back" data-view="workView" aria-label="Volver">←</button>
-        <div><small>IMPORTACIÓN</small><h2>Desde ChatGPT</h2></div>
-      </div>
-      <div class="card section-card import-help">
-        <h3>1. Da estas instrucciones a ChatGPT</h3>
-        <p>Pulsa el botón y pega las instrucciones en la conversación donde has dictado los extintores.</p>
-        <button id="copyImportPrompt" class="wide-secondary">Copiar instrucciones para ChatGPT</button>
-      </div>
-      <div class="card section-card">
-        <h3>2. Pega aquí el resultado</h3>
-        <p class="field-help">Copia todo el bloque que te entregue ChatGPT. Puedes importar varios extintores a la vez.</p>
-        <textarea id="importText" class="import-text" rows="12" placeholder='[{"syco":"579","placa":"6788080","modelo":"6 K","fabricacion":"12-23","retimbrado":"-","senal":"25","observaciones":[]}]'></textarea>
-        <button id="processImport" class="primary">Importar registros</button>
-      </div>
-      <div class="privacy-note">Los datos se procesan únicamente en este dispositivo.</div>
-    </section>
-
-    <section id="formView" class="view">
-      <div class="work-title">
-        <button class="back" data-view="workView" aria-label="Volver">←</button>
-        <div><small>REGISTRO</small><h2 id="formTitle">Nuevo extintor</h2></div>
-      </div>
-
-      <div class="voice-banner">
-        <div><strong>Dictar todos los datos</strong><p>SYCo, placa, modelo, fechas, señal y defectos.</p></div>
-        <button id="dictateLabel" class="mic" aria-label="Dictar todos los datos">🎙</button>
-      </div>
-
-      <form id="equipmentForm">
-        <div class="card section-card">
-          <h3>Datos de la pegatina</h3>
-          <label class="photo-field">Foto de la pegatina
-            <input id="labelPhoto" type="file" accept="image/*" capture="environment">
-            <span id="labelPhotoPreview" class="photo-placeholder">＋ Hacer foto</span>
-          </label>
-          <div class="grid two">
-            <label>Número SYCo <span>*</span><input id="syco" inputmode="numeric" required></label>
-            <label>N.º de placa <span>*</span><span class="input-with-mic"><input id="plate" inputmode="numeric" required><button id="dictatePlate" type="button" class="mic small" aria-label="Dictar solo la placa">🎙</button></span></label>
+          <div class="stats">
+            <div><strong id="totalCount">0</strong><span>Total</span></div>
+            <div><strong id="seenCount">0</strong><span>Vistos</span></div>
+            <div><strong id="pendingCount">0</strong><span>Pendientes</span></div>
           </div>
-          <label>Modelo <span>*</span>
-            <select id="model" required>
-              <option value="">Seleccionar</option><option>ABC 1 KG</option><option>ABC 2 KG</option>
-              <option>ABC 3 KG</option><option>ABC 4 KG</option><option>ABC 5 KG</option>
-              <option>ABC 6 KG</option><option>ABC 9 KG</option><option>CO2 2 KG</option><option>CO2 5 KG</option>
+
+          <button id="openListBtn" class="primary">â–¦ Ver registros en tabla</button>
+          <button id="importExcelBtn" class="secondary">Importar Excel</button>
+          <input id="importExcelInput" class="hidden" type="file" accept=".xlsx,.xls" />
+          <p id="importStatus" class="importStatus"></p>
+          <button id="newRecordBtn" class="secondary">Meter dato nuevo</button>
+          <button id="downloadExcelBtn" class="secondary">Descargar Excel</button>
+          <button id="openCorrectivosBtn" class="secondary grayButton">Correctivos</button>
+          <button id="openChecklistBtn" class="secondary grayButton hidden">Checklist</button>
+        </div>
+      </section>
+
+      <section id="listView" class="hidden">
+        <button class="back" data-back="home">â† Volver</button>
+        <p class="kicker">REGISTROS</p>
+        <h2>Listado</h2>
+
+        <div class="compactFilters">
+          <label>Edificio<input id="filterEdificio" type="search" placeholder="Filtrar edificio" /></label>
+          <label>NÃºmero SYCo<input id="filterNumero" type="search" placeholder="Filtrar nÃºmero" /></label>
+          <label>Tipo / otros<input id="filterSerie" type="search" placeholder="Filtrar tipo u otros datos" /></label>
+          <label>Ordenar
+            <select id="sortOrder">
+              <option value="none">Sin ordenar</option>
+              <option value="edificio">Edificio</option>
+              <option value="numero">NÃºmero SYCo</option>
             </select>
           </label>
-          <div class="grid two date-grid">
-            <fieldset><legend>Fabricación <span>*</span></legend><div class="date-selects"><select id="manufactureMonth" aria-label="Mes de fabricación"></select><select id="manufactureYear" aria-label="Año de fabricación"></select></div><input id="manufacture" type="hidden"></fieldset>
-            <fieldset><legend>Retimbrado</legend><div class="date-selects"><select id="retestMonth" aria-label="Mes de retimbrado"></select><select id="retestYear" aria-label="Año de retimbrado"></select></div><input id="retest" type="hidden"></fieldset>
-          </div>
-          <label>Señal
-            <select id="signal"><option value="S">Sin señal</option><option value="C">Señal caducada</option><option>2018</option><option>2019</option><option>2020</option><option>2021</option><option>2022</option><option>2023</option><option>2024</option><option>2025</option><option>2026</option></select>
+          <label>Estado
+            <select id="seenFilter">
+              <option value="all">Todos</option>
+              <option value="pending">Pendientes</option>
+              <option value="seen">Vistos</option>
+            </select>
           </label>
-          <div class="calculated"><span>Caducidad 20 años</span><strong id="expiry">—</strong></div>
         </div>
 
-        <div class="card section-card">
-          <h3>Fotos del extintor</h3>
-          <div class="photo-grid">
-            <label>Foto 1<input class="equipment-photo" data-index="0" type="file" accept="image/*" capture="environment"><span class="photo-placeholder">＋</span></label>
-            <label>Foto 2<input class="equipment-photo" data-index="1" type="file" accept="image/*" capture="environment"><span class="photo-placeholder">＋</span></label>
-            <label>Foto 3<input class="equipment-photo" data-index="2" type="file" accept="image/*" capture="environment"><span class="photo-placeholder">＋</span></label>
-            <label>Foto adicional<input class="equipment-photo" data-index="3" type="file" accept="image/*" capture="environment"><span class="photo-placeholder">＋</span></label>
+        <div class="listActions">
+          <button id="newRecordFromListBtn" class="secondary">Meter dato nuevo</button>
+          <button id="downloadExcelFromTableBtn" class="secondary">â‡© Descargar filtrados en Excel</button>
+        </div>
+
+        <div class="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>Edificio</th>
+                <th>Tipo</th>
+                <th>NÃºmero</th>
+                <th>UbicaciÃ³n</th>
+                <th>Otro 1</th>
+                <th>Otro 2</th>
+                <th>Otro 3</th>
+                <th>Observaciones</th>
+                <th>Defectos</th>
+                <th>Foto 1</th>
+                <th>Foto 2</th>
+                <th>Visto</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="recordsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="correctivosView" class="hidden">
+        <button class="back" data-back="home">â† Volver</button>
+        <p class="kicker">INFORMES</p>
+        <h2>Correctivos</h2>
+        <p class="subtitle">AnÃ¡lisis de registros con defectos y generaciÃ³n del listado en Word.</p>
+
+        <div class="stats reportStats">
+          <div><strong id="correctivosCount">0</strong><span>Correctivos</span></div>
+          <div><strong id="correctivosGroupsCount">0</strong><span>Grupos</span></div>
+          <div><strong id="correctivosClientsCount">0</strong><span>Clientes</span></div>
+        </div>
+
+        <div class="reportRecord">
+          <div>
+            <h3>Correctivos</h3>
+            <p id="correctivosSummary">No hay defectos registrados.</p>
+          </div>
+          <button id="downloadCorrectivosWordBtn" class="primary">Sacar Word</button>
+        </div>
+
+        <div id="correctivosPreview" class="reportPreview"></div>
+      </section>
+
+      <section id="checklistView" class="hidden">
+        <button class="back" data-back="home">â† Volver</button>
+        <p class="kicker">INFORMES</p>
+        <h2>Checklist</h2>
+        <p class="subtitle">Rellena la plantilla de extintores con los datos guardados en la app.</p>
+
+        <div class="stats reportStats">
+          <div><strong id="checklistCount">0</strong><span>Registros</span></div>
+          <div><strong id="checklistPagesCount">0</strong><span>Hojas</span></div>
+          <div><strong id="checklistClientsCount">0</strong><span>Clientes</span></div>
+        </div>
+
+        <div class="reportRecord">
+          <div>
+            <h3>Checklist</h3>
+            <p id="checklistSummary">No hay registros para rellenar.</p>
+          </div>
+          <button id="downloadChecklistBtn" class="primary">Sacar checklist</button>
+        </div>
+
+        <div class="reportRecord">
+          <div>
+            <h3>Retimbrados pendientes</h3>
+            <p>Calcula los extintores pendientes de retimbrar.</p>
+          </div>
+          <button id="openRetimbradosBtn" class="primary">Ver retimbrados pendientes</button>
+        </div>
+
+        <div class="reportRecord">
+          <div>
+            <h3>Extintores caducados</h3>
+            <p>Calcula los extintores con fecha de servicio caducada.</p>
+          </div>
+          <button id="openCaducadosBtn" class="primary">Ver extintores caducados</button>
+        </div>
+
+        <div class="instructionBox">
+          <h3>Instrucciones de relleno</h3>
+          <p><strong>Cliente:</strong> cliente. edificio</p>
+          <p><strong>NÃºm:</strong> NÃºmero SYCo</p>
+          <p><strong>EficacÃ­a:</strong> no se rellena</p>
+          <p><strong>Op. Realiza:</strong> RevisiÃ³n, o RevisiÃ³n y recarga cuando en observaciones se indique recarga o retimbrado.</p>
+          <p><strong>Cadu 20 A:</strong> aÃ±o de fabricaciÃ³n + 20.</p>
+          <p><strong>Observaciones:</strong> en cada fila se ponen los correctivos seÃ±alados, por ejemplo: Sin seÃ±al. / SeÃ±al caducada. Si no hay correctivos queda en blanco.</p>
+        </div>
+      </section>
+
+      <section id="retimbradosView" class="hidden">
+        <button class="back" data-back="checklist">â† Volver</button>
+        <p class="kicker">INFORMES</p>
+        <h2>Retimbrados pendientes</h2>
+        <p class="subtitle" id="retimbradosSummary">Calcula los extintores pendientes de retimbrar.</p>
+
+        <div class="reportRecord">
+          <div>
+            <h3>Listado Word</h3>
+            <p>FabricaciÃ³n igual o inferior a 2021 y retimbrado entre 2008 y 2021.</p>
+          </div>
+          <button id="downloadRetimbradosWordBtn" class="primary">Descargar listado</button>
+        </div>
+
+        <div class="reportRecord">
+          <div>
+            <h3>Resumen econÃ³mico</h3>
+            <p>Agrupa por modelo y deja casillas para precio, importe, total, IVA y total con IVA.</p>
+          </div>
+          <button id="downloadRetimbradosEconomicoWordBtn" class="primary">Descargar resumen econÃ³mico Excel</button>
+        </div>
+
+        <div class="reportRecord">
+          <div>
+            <h3>Extintores caducados</h3>
+            <p>Abre el listado de extintores caducados.</p>
+          </div>
+          <button id="openCaducadosFromRetimbradosBtn" class="primary">Ver extintores caducados</button>
+        </div>
+      </section>
+
+      <section id="caducadosView" class="hidden">
+        <button class="back" data-back="checklist">â† Volver</button>
+        <p class="kicker">INFORMES</p>
+        <h2>Extintores caducados</h2>
+        <p class="subtitle" id="caducadosSummary">Calcula los extintores caducados.</p>
+
+        <div class="reportRecord">
+          <div>
+            <h3>Listado Word</h3>
+            <p>Extintores cuya fecha de fabricaciÃ³n mÃ¡s 20 aÃ±os ya estÃ¡ caducada.</p>
+          </div>
+          <button id="downloadCaducadosWordBtn" class="primary">Descargar listado</button>
+        </div>
+
+        <div class="reportRecord">
+          <div>
+            <h3>Resumen econÃ³mico</h3>
+            <p>Agrupa por modelo y deja casillas para precio, importe, total, IVA y total con IVA.</p>
+          </div>
+          <button id="downloadCaducadosEconomicoWordBtn" class="primary">Descargar resumen econÃ³mico Excel</button>
+        </div>
+      </section>
+
+      <section id="formView" class="hidden">
+        <div class="formTopLine">
+          <button class="back" data-back="list">â† Volver</button>
+          <div class="lastNumberBox">
+            <span>Ãšltimo nÃºmero</span>
+            <strong id="lastNumberUsed">-</strong>
           </div>
         </div>
+        <p class="kicker" id="formKicker">REGISTRO</p>
+        <h2 id="formTitle">Editar equipo</h2>
 
-        <div class="card section-card">
-          <h3>Defectos encontrados</h3>
-          <p class="field-help">Puedes seleccionar varios al mismo tiempo.</p>
-          <div class="defect-list">
-            <label><input type="checkbox" name="defect" value="Extintor caducado."><span>Extintor caducado</span></label>
-            <label><input type="checkbox" name="defect" value="Hay un obstáculo."><span>Hay un obstáculo</span></label>
-            <label><input type="checkbox" name="defect" value="Extintor descargado."><span>Extintor descargado</span></label>
-            <label><input type="checkbox" name="defect" value="Extintor sin presión."><span>Extintor sin presión</span></label>
-            <label><input type="checkbox" name="defect" value="Extintor en el suelo."><span>Extintor en el suelo</span></label>
-            <label><input type="checkbox" name="defect" value="Cristal del extintor ausente o roto."><span>Cristal ausente o roto</span></label>
+        <form id="recordForm" class="card formCard">
+          <input type="hidden" id="recordId" />
+
+          <div class="voiceBlock">
+            <div>
+              <h3>Entrada por voz</h3>
+              <p id="voiceStatus">Pulsa iniciar y dicta nÃºmero, tipo, ubicaciÃ³n y observaciones.</p>
+            </div>
+            <div class="voiceActions">
+              <button type="button" id="voiceStartBtn" class="secondary">Iniciar voz</button>
+              <button type="button" id="voiceStopBtn" class="secondary" disabled>Parar voz</button>
+            </div>
           </div>
-          <h3 class="other-title">Otra observación</h3>
-          <div class="observation"><textarea id="otherObservation" rows="3" placeholder="Escribir o dictar otra observación"></textarea><button type="button" class="mic small" data-target="otherObservation">🎙</button></div>
-        </div>
-        <button type="submit" class="primary">Guardar extintor</button>
-        <button id="deleteEquipment" type="button" class="danger hidden">Eliminar este extintor</button>
-      </form>
-    </section>
 
-    <section id="photoTypesView" class="view">
-      <div class="work-title">
-        <button class="back" data-view="homeView" aria-label="Volver">←</button>
-        <div><small>FOTOGRAFÍAS</small><h2>Seleccionar equipo</h2></div>
-      </div>
-      <div class="type-options">
-        <button id="photoExtinguisherBtn" class="type-card"><span class="type-icon">H</span><strong>Hidrantes</strong><small>Registrar defectos y fotografías</small></button>
-        <button id="photoBieBtn" class="type-card"><span class="type-icon">A</span><strong>Armarios</strong><small>Registrar defectos y fotografías</small></button>
-      </div>
-    </section>
+          <label>Cliente<input id="cliente" /></label>
+          <label>Edificio<input id="edificio" /></label>
+          <label>NÃºmero
+            <div class="fieldWithButton">
+              <input id="cantidad" />
+              <button type="button" id="voiceSycoBtn" class="iconTextButton">Dictar</button>
+            </div>
+            <span id="voiceSycoStatus" class="fieldHint"></span>
+          </label>
+          <label>UbicaciÃ³n<textarea id="ubicacion" rows="2"></textarea></label>
+          <label>Tipo de equipo
+            <select id="modelo">
+              <option value="Hidrante">Hidrante</option>
+              <option value="Armario">Armario</option>
+            </select>
+          </label>
+          <label>Otro 1
+            <div class="fieldWithButton">
+              <input id="numeroSerie" />
+              <button type="button" id="voiceSerieBtn" class="iconTextButton">Dictar</button>
+            </div>
+            <span id="voiceSerieStatus" class="fieldHint"></span>
+          </label>
+          <label>Otro 2<input id="fechaFabricacion" /></label>
+          <label>Otro 3<input id="fechaProximoRetimbrado" /></label>
+          <label>Observaciones<textarea id="observaciones" rows="3"></textarea></label>
+          <input id="senal" type="hidden" />
 
-    <section id="photoFormView" class="view">
-      <div class="work-title">
-        <button class="back" data-view="photoTypesView" aria-label="Volver">←</button>
-        <div><small>FICHA FOTOGRÁFICA</small><h2 id="photoFormTitle">Hidrante</h2></div>
-      </div>
-      <form id="photoRecordForm">
-        <div class="card section-card">
-          <h3>Identificación</h3>
-          <label>Edificio <span>*</span><input id="photoBuilding" required placeholder="Nombre o ubicación del edificio"></label>
-          <label>Número <span>*</span><input id="photoNumber" required inputmode="numeric" placeholder="Número del equipo"></label>
-          <div class="grid two">
-            <label>Otro 1<input id="photoOther1" placeholder="Dato opcional"></label>
-            <label>Otro 2<input id="photoOther2" placeholder="Dato opcional"></label>
+          <div class="defectsBlock">
+            <h3>Defectos encontrados</h3>
+            <div id="defectsList" class="checks"></div>
           </div>
-          <label>Otro 3<input id="photoOther3" placeholder="Dato opcional"></label>
-        </div>
-        <div class="card section-card">
-          <h3>Defectos encontrados</h3>
-          <p class="field-help">Puedes marcar todos los defectos que correspondan.</p>
-          <div id="photoDefectList" class="defect-list"></div>
-          <h3 class="other-title">Otra observación</h3>
-          <textarea id="photoObservation" rows="3" placeholder="Escribir otra observación"></textarea>
-        </div>
-        <div class="card section-card">
-          <h3>Fotografías</h3>
-          <div class="record-photo-grid">
-            <div class="record-photo-slot"><label>Foto 1<input id="photoRecordFile0" class="record-photo-input" data-index="0" type="file" accept="image/*" capture="environment"><span id="photoRecordPreview0" class="photo-placeholder">＋ Hacer foto</span></label><button id="deleteRecordPhoto0" type="button" class="delete-photo">Eliminar foto</button></div>
-            <div class="record-photo-slot"><label>Foto 2<input id="photoRecordFile1" class="record-photo-input" data-index="1" type="file" accept="image/*" capture="environment"><span id="photoRecordPreview1" class="photo-placeholder">＋ Hacer foto</span></label><button id="deleteRecordPhoto1" type="button" class="delete-photo">Eliminar foto</button></div>
+
+          <div class="photosBlock">
+            <h3>FotografÃ­as</h3>
+            <div class="photoGrid">
+              <div class="photoSlot">
+                <strong>Foto 1</strong>
+                <label class="photoBox" id="photoBox1">
+                  <input id="photoInput1" type="file" accept="image/*" capture="environment" />
+                  <span>+ Hacer foto</span>
+                  <img id="photoPreview1" alt="Foto 1" class="hidden" />
+                </label>
+                <button type="button" id="deletePhoto1" class="photoDelete">Eliminar foto</button>
+              </div>
+              <div class="photoSlot">
+                <strong>Foto 2</strong>
+                <label class="photoBox" id="photoBox2">
+                  <input id="photoInput2" type="file" accept="image/*" capture="environment" />
+                  <span>+ Hacer foto</span>
+                  <img id="photoPreview2" alt="Foto 2" class="hidden" />
+                </label>
+                <button type="button" id="deletePhoto2" class="photoDelete">Eliminar foto</button>
+              </div>
+            </div>
           </div>
-        </div>
-        <button id="viewPhotoRecords" type="button" class="wide-secondary table-button">▦ Ver registros en tabla</button>
-        <button id="photoRecordSubmit" type="submit" class="primary">Guardar ficha</button>
-        <button type="button" class="wide-secondary" data-view="photoTypesView">Volver atrás</button>
-      </form>
-    </section>
 
-    <section id="photoRecordsView" class="view">
-      <div class="work-title">
-        <button class="back" data-view="photoFormView" aria-label="Volver">←</button>
-        <div><small>REGISTROS FOTOGRÁFICOS</small><h2 id="photoRecordsTitle">Hidrantes</h2></div>
-      </div>
-      <div class="card records-filter">
-        <label>Filtrar por número<input id="photoNumberFilter" inputmode="numeric" placeholder="Escribe el número del equipo"></label>
-        <div id="photoRecordsCount" class="records-count">0 registros</div>
-        <button id="downloadPhotoRecordsExcel" type="button" class="wide-secondary">⇩ Descargar todos en Excel</button>
-      </div>
-      <div class="records-table-wrap">
-        <table class="records-table">
-          <thead><tr><th>Edificio</th><th>Número</th><th>Otro 1</th><th>Otro 2</th><th>Otro 3</th><th>Defectos</th><th>Observación</th><th>Fotos</th><th>Fecha</th><th>Acciones</th></tr></thead>
-          <tbody id="photoRecordsBody"></tbody>
-        </table>
-        <div id="photoRecordsEmpty" class="empty hidden">No hay registros que coincidan.</div>
-      </div>
-    </section>
+          <label class="seenLine">
+            <input id="visto" type="checkbox" />
+            <span>Marcar como visto</span>
+          </label>
 
-    <section id="photoRecordDetailView" class="view">
-      <div class="work-title">
-        <button class="back" data-view="photoRecordsView" aria-label="Volver">←</button>
-        <div><small id="photoDetailType">REGISTRO</small><h2 id="photoDetailTitle">Equipo</h2></div>
-      </div>
-      <div class="card section-card detail-data">
-        <h3>Datos del registro</h3>
-        <dl>
-          <div><dt>Edificio</dt><dd id="photoDetailBuilding"></dd></div>
-          <div><dt>Número</dt><dd id="photoDetailNumber"></dd></div>
-          <div><dt>Otro 1</dt><dd id="photoDetailOther1"></dd></div>
-          <div><dt>Otro 2</dt><dd id="photoDetailOther2"></dd></div>
-          <div><dt>Otro 3</dt><dd id="photoDetailOther3"></dd></div>
-          <div><dt>Observación</dt><dd id="photoDetailObservation"></dd></div>
-          <div><dt>Fecha</dt><dd id="photoDetailDate"></dd></div>
-        </dl>
-      </div>
-      <div class="card section-card">
-        <h3>Defectos encontrados</h3>
-        <ul id="photoDetailDefects" class="detail-defects"></ul>
-      </div>
-      <div class="card section-card">
-        <h3>Fotografías</h3>
-        <p class="field-help">Puedes eliminar una fotografía o sustituirla por otra.</p>
-        <div id="photoDetailImages" class="detail-images"></div>
-      </div>
-      <button id="deletePhotoRecord" type="button" class="danger">Eliminar registro</button>
-      <button id="editPhotoRecord" type="button" class="primary">Modificar datos y fotos</button>
-      <button type="button" class="wide-secondary" data-view="photoRecordsView">Volver atrás</button>
-    </section>
+          <div class="actions">
+            <button type="button" id="viewTableFromFormBtn" class="secondary">â–¦ Ver registros en tabla</button>
+            <button type="submit" class="primary">Guardar</button>
+            <button type="button" id="deleteBtn" class="danger">Eliminar</button>
+          </div>
+        </form>
+      </section>
+    </main>
 
-    <section id="historyView" class="view">
-      <div class="work-title"><button class="back" data-view="homeView">←</button><div><small>HISTORIAL</small><h2>Trabajos guardados</h2></div></div>
-      <div id="historyList" class="equipment-list"></div>
-    </section>
-  </main>
-
-  <div id="toast" class="toast"></div>
-  <script src="exceljs.min.js"></script>
-  <script type="module" src="app.js"></script>
-</body>
+    <script src="exceljs.min.js?v=hidrantes-correctivos-v1"></script>
+    <script src="seed-data.js?v=hidrantes-correctivos-v1"></script>
+    <script src="app.js?v=hidrantes-correctivos-v1"></script>
+  </body>
 </html>
+

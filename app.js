@@ -1,706 +1,1956 @@
-const $ = id => document.getElementById(id);
-const views = [...document.querySelectorAll('.view')];
-let currentJob = null;
-let editingIndex = -1;
-let pendingPhotos = { label: '', equipment: ['', '', '', ''] };
-let currentPhotoType = '';
-let photoRecordPhotos = ['', ''];
-let photoRecordsCache = [];
-let selectedPhotoRecord = null;
-let editingPhotoRecordId = '';
-let deferredInstall;
+const DB_NAME = "hidrantes-correctivos-db-v1";
+const DB_VERSION = 1;
+const STORE_NAME = "state";
+const LAST_NUMBER_KEY = "hidrantes-last-number-used";
+const CHECKLIST_TEMPLATE_URL = "./checklist-template.xlsx";
 
-const CHATGPT_IMPORT_PROMPT = `Convierte todos los extintores que te he dictado en un JSON válido para mi aplicación. Devuelve exclusivamente el JSON, sin explicaciones y sin bloques Markdown. Debe ser una lista con este formato exacto:
-[
-  {
-    "syco": "579",
-    "placa": "6788080",
-    "modelo": "6 K",
-    "fabricacion": "12-23",
-    "retimbrado": "-",
-    "senal": "25",
-    "defectos": ["Extintor descargado", "Hay un obstáculo"],
-    "otraObservacion": "Texto adicional si existe"
-  }
-]
-Usa una entrada por extintor. No inventes datos. Si un dato no fue indicado, déjalo como cadena vacía. Modelos admitidos: 1 K, 2 K, 3 K, 4 K, 5 K, 6 K, 9 K, 2 CO2 y 5 CO2. Para señal usa S, C, 18, 19, 20, 21, 22, 23, 24, 25 o 26. Defectos admitidos: Extintor caducado, Hay un obstáculo, Extintor descargado, Extintor sin presión, Extintor en el suelo y Cristal del extintor ausente o roto.`;
-
-const DEFECTS = [
-  'Extintor caducado.', 'Hay un obstáculo.', 'Extintor descargado.',
-  'Extintor sin presión.', 'Extintor en el suelo.', 'Cristal del extintor ausente o roto.'
-];
-const PHOTO_DEFECTS = {
-  hidrante: ['No abre llave.', 'Faltan racor.', 'Falta tapón.', 'Falta señal.', 'En mal estado.'],
+const DEFECTS_BY_TYPE = {
+  hidrante: [
+    "No abre llave.",
+    "Faltan racor.",
+    "Falta tapón.",
+    "Falta señal.",
+    "En mal estado.",
+  ],
   armario: [
-    'Armario en mal estado.', 'Armario no abre.', 'Falta llave hidrante.',
-    'Falta mangueras 45.', 'Falta mangueras 70.',
-    'Falta racores 45.', 'Falta racores 70.',
-    'Falta lanzas 45.', 'Falta lanzas 70.', 'Falta derivación.'
-  ]
+    "Armario en mal estado.",
+    "Armario no abre.",
+    "Falta llave hidrante.",
+    "Falta mangueras 45.",
+    "Falta mangueras 70.",
+    "Falta racores 45.",
+    "Falta racores 70.",
+    "Falta lanzas 45.",
+    "Falta lanzas 70.",
+    "Falta derivación.",
+  ],
 };
-const PHOTO_TYPE_LABELS = {
-  hidrante: { singular: 'Hidrante', plural: 'Hidrantes', record: 'REGISTRO HIDRANTE' },
-  armario: { singular: 'Armario', plural: 'Armarios', record: 'REGISTRO ARMARIO' }
-};
-const MONTH_NAMES = {enero:'01',febrero:'02',marzo:'03',abril:'04',mayo:'05',junio:'06',julio:'07',agosto:'08',septiembre:'09',setiembre:'09',octubre:'10',noviembre:'11',diciembre:'12'};
+const defectOptions = [...DEFECTS_BY_TYPE.hidrante, ...DEFECTS_BY_TYPE.armario];
+const reportDefectLabels = {};
 
-const dbPromise = new Promise((resolve, reject) => {
-  const request = indexedDB.open('hidrantes-db', 1);
-  request.onupgradeneeded = () => {
-    if (!request.result.objectStoreNames.contains('jobs')) request.result.createObjectStore('jobs', { keyPath: 'id' });
-    if (!request.result.objectStoreNames.contains('photoRecords')) request.result.createObjectStore('photoRecords', { keyPath: 'id' });
+const fields = [
+  "cliente",
+  "edificio",
+  "cantidad",
+  "ubicacion",
+  "modelo",
+  "numeroSerie",
+  "fechaFabricacion",
+  "fechaProximoRetimbrado",
+  "observaciones",
+  "senal",
+];
+
+let records = [];
+let currentPhotos = ["", ""];
+let voiceRecognition = null;
+let voiceStep = "numero";
+let voiceActive = false;
+let sycoVoiceRecognition = null;
+let sycoVoiceActive = false;
+let sycoVoiceParts = [];
+let sycoVoiceDraft = "";
+let serieVoiceRecognition = null;
+let serieVoiceActive = false;
+let serieVoiceParts = [];
+let serieVoiceDraft = "";
+
+const $ = (id) => document.getElementById(id);
+
+function safeText(value) {
+  return value === undefined || value === null ? "" : String(value);
+}
+
+function createId() {
+  return `rec-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeDefects(defects) {
+  const normalized = [];
+  for (const defect of Array.isArray(defects) ? defects : []) {
+    const cleanDefect = normalizeDefectName(defect);
+    if (cleanDefect && !normalized.includes(cleanDefect)) normalized.push(cleanDefect);
+  }
+  return normalized;
+}
+
+function cleanRecord(record = {}) {
+  return {
+    id: record.id || createId(),
+    cliente: safeText(record.cliente),
+    edificio: safeText(record.edificio ?? record.edificioCodigo),
+    cantidad: safeText(record.cantidad),
+    ubicacion: safeText(record.ubicacion),
+    modelo: normalizeEquipmentType(record.modelo || record.tipo || record.tipoEquipo),
+    numeroSerie: safeText(record.numeroSerie),
+    fechaFabricacion: safeText(record.fechaFabricacion),
+    fechaProximoRetimbrado: safeText(record.fechaProximoRetimbrado),
+    observaciones: safeText(record.observaciones),
+    senal: safeText(record.senal),
+    defectos: normalizeDefects(record.defectos),
+    photos: Array.isArray(record.photos) ? [safeText(record.photos[0]), safeText(record.photos[1])] : ["", ""],
+    visto: Boolean(record.visto),
+    origen: record.origen || "excel",
   };
-  request.onsuccess = () => resolve(request.result);
-  request.onerror = () => reject(request.error);
-});
+}
 
-async function dbAction(mode, action, storeName = 'jobs') {
-  const db = await dbPromise;
+function normalizeKeyPart(value) {
+  return safeText(value).trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function recordKey(record) {
+  return [
+    normalizeKeyPart(record.modelo),
+    normalizeKeyPart(record.cantidad),
+    normalizeKeyPart(record.edificio),
+    normalizeKeyPart(record.ubicacion),
+  ].join("|");
+}
+
+function excelCellToText(value) {
+  if (value === undefined || value === null) return "";
+  if (value instanceof Date) return value.toLocaleDateString("es-ES");
+  if (typeof value === "object") {
+    if (value.text) return String(value.text);
+    if (value.result !== undefined) return excelCellToText(value.result);
+    if (Array.isArray(value.richText)) return value.richText.map((part) => part.text || "").join("");
+  }
+  return String(value);
+}
+
+function normalizeHeader(value) {
+  return safeText(value)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[º°]/g, "o")
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function buildHeaderMap(rowValues) {
+  const map = {};
+  for (let col = 1; col < rowValues.length; col += 1) {
+    const key = normalizeHeader(excelCellToText(rowValues[col]));
+    if (key) map[key] = col;
+  }
+  return map;
+}
+
+function importedValue(rowValues, headerMap, keys, fallbackCol) {
+  const col = keys.map((key) => headerMap[key]).find(Boolean) || fallbackCol;
+  return excelCellToText(rowValues[col]);
+}
+
+function truthyExcelValue(value) {
+  const text = normalizeHeader(excelCellToText(value));
+  return ["si", "x", "true", "1", "ok", "visto"].includes(text);
+}
+
+function normalizeEquipmentType(value) {
+  const key = normalizeHeader(value);
+  if (key.includes("armario")) return "Armario";
+  return "Hidrante";
+}
+
+function equipmentTypeKey(recordOrValue) {
+  const value = typeof recordOrValue === "object" ? recordOrValue?.modelo : recordOrValue;
+  return normalizeEquipmentType(value).toLowerCase();
+}
+
+function normalizeDefectName(value) {
+  const text = safeText(value).trim();
+  if (!text || text === "-") return "";
+  const aliases = new Map([
+    ["noabrellave", "No abre llave."],
+    ["faltanracor", "Faltan racor."],
+    ["faltanracores", "Faltan racor."],
+    ["faltatapon", "Falta tapón."],
+    ["faltasenal", "Falta señal."],
+    ["sinsenal", "Falta señal."],
+    ["enmalestado", "En mal estado."],
+    ["malestado", "En mal estado."],
+    ["armarioenmalestado", "Armario en mal estado."],
+    ["armarionoabre", "Armario no abre."],
+    ["faltallavehidrante", "Falta llave hidrante."],
+    ["faltamangueras45", "Falta mangueras 45."],
+    ["faltamangueras70", "Falta mangueras 70."],
+    ["faltaracores45", "Falta racores 45."],
+    ["faltaracores70", "Falta racores 70."],
+    ["faltalanzas45", "Falta lanzas 45."],
+    ["faltalanzas70", "Falta lanzas 70."],
+    ["faltaderivacion", "Falta derivación."],
+    ...defectOptions.map((defect) => [normalizeHeader(defect), defect]),
+  ]);
+  return aliases.get(normalizeHeader(text)) || text;
+}
+
+function splitImportedDefects(value) {
+  return safeText(value)
+    .split(/\s*\/\s*|\r?\n|;/)
+    .map(normalizeDefectName)
+    .filter(Boolean);
+}
+
+function importedDefects(rowValues, headerMap) {
+  const defects = splitImportedDefects(importedValue(rowValues, headerMap, ["defectosencontrados", "defectos"], 0));
+  const flagColumns = [
+    ...defectOptions.map((defect) => [normalizeHeader(defect), defect]),
+  ];
+  for (const [key, defect] of flagColumns) {
+    const col = headerMap[key];
+    if (col && truthyExcelValue(rowValues[col])) defects.push(defect);
+  }
+  return normalizeDefects(defects);
+}
+
+function rowToImportedRecord(rowValues, index, headerMap = {}) {
+  return cleanRecord({
+    id: `import-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`,
+    cliente: importedValue(rowValues, headerMap, ["cliente"], 1),
+    edificio: importedValue(rowValues, headerMap, ["edificio"], 2),
+    modelo: importedValue(rowValues, headerMap, ["tipoequipo", "tipo", "modelo"], 3),
+    cantidad: importedValue(rowValues, headerMap, ["numero", "numerosyco", "num"], 4),
+    ubicacion: importedValue(rowValues, headerMap, ["ubicacion"], 5),
+    numeroSerie: importedValue(rowValues, headerMap, ["otro1", "noserie", "numeroserie", "serie"], 6),
+    fechaFabricacion: importedValue(rowValues, headerMap, ["otro2", "fechaanofabricacion", "fechafabricacion", "fabricacion"], 7),
+    fechaProximoRetimbrado: importedValue(rowValues, headerMap, ["otro3", "fecharetimbrado", "retimbrado"], 8),
+    observaciones: importedValue(rowValues, headerMap, ["observaciones", "observacion"], 9),
+    senal: importedValue(rowValues, headerMap, ["senal"], 10),
+    defectos: importedDefects(rowValues, headerMap),
+    visto: truthyExcelValue(importedValue(rowValues, headerMap, ["visto"], 0)),
+    origen: "importado",
+  });
+}
+
+function uint8ToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function workbookImageToDataUrl(workbook, imageId) {
+  const image = typeof workbook.getImage === "function"
+    ? workbook.getImage(imageId)
+    : workbook.model?.media?.find((item) => item.index === imageId || item.imageId === imageId);
+  if (!image) return "";
+  const extension = safeText(image.extension || image.type || "jpeg").replace(/^\./, "").toLowerCase() || "jpeg";
+  const mime = extension === "png" ? "image/png" : extension === "gif" ? "image/gif" : "image/jpeg";
+  if (image.base64) {
+    return image.base64.startsWith("data:") ? image.base64 : `data:${mime};base64,${image.base64}`;
+  }
+  const buffer = image.buffer || image.data;
+  if (!buffer) return "";
+  const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  return `data:${mime};base64,${uint8ToBase64(bytes)}`;
+}
+
+function imageTopLeft(image) {
+  const tl = image.range?.tl || image.range?.topLeft || {};
+  const row = Number.isFinite(tl.nativeRow) ? tl.nativeRow + 1 : Math.floor(Number(tl.row || 0)) + 1;
+  const col = Number.isFinite(tl.nativeCol) ? tl.nativeCol + 1 : Math.floor(Number(tl.col || 0)) + 1;
+  return { row, col };
+}
+
+function importedPhotosByRow(workbook, sheet, headerMap) {
+  const photosByRow = new Map();
+  if (typeof sheet.getImages !== "function") return photosByRow;
+  const foto1Col = headerMap.foto1 || headerMap.foto || 21;
+  const foto2Col = headerMap.foto2 || 22;
+  for (const image of sheet.getImages()) {
+    const { row, col } = imageTopLeft(image);
+    if (row <= 1) continue;
+    const photoIndex = col === foto1Col ? 0 : col === foto2Col ? 1 : -1;
+    if (photoIndex < 0) continue;
+    const dataUrl = workbookImageToDataUrl(workbook, image.imageId);
+    if (!dataUrl) continue;
+    const photos = photosByRow.get(row) || ["", ""];
+    photos[photoIndex] = dataUrl;
+    photosByRow.set(row, photos);
+  }
+  return photosByRow;
+}
+
+function openDatabase() {
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, mode);
-    const store = tx.objectStore(storeName);
-    const req = action(store);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
-}
-const saveJob = job => dbAction('readwrite', store => store.put(job));
-const getJob = id => dbAction('readonly', store => store.get(id));
-const getJobs = () => dbAction('readonly', store => store.getAll());
-const deleteJob = id => dbAction('readwrite', store => store.delete(id));
-const savePhotoRecord = record => dbAction('readwrite', store => store.put(record), 'photoRecords');
-const getPhotoRecords = () => dbAction('readonly', store => store.getAll(), 'photoRecords');
-const removePhotoRecord = id => dbAction('readwrite', store => store.delete(id), 'photoRecords');
-const createId = () => globalThis.crypto?.randomUUID?.() || `trabajo-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-const photoTypeLabel = type => PHOTO_TYPE_LABELS[type] || PHOTO_TYPE_LABELS.hidrante;
-
-function initializeDateSelectors() {
-  const monthOptions = Array.from({length:12}, (_, index) => String(index + 1).padStart(2, '0'));
-  $('manufactureMonth').innerHTML = '<option value="">Mes</option>' + monthOptions.map(month => `<option>${month}</option>`).join('');
-  $('retestMonth').innerHTML = '<option value="-">Sin retimbrado</option>' + monthOptions.map(month => `<option>${month}</option>`).join('');
-  const years = Array.from({length:26}, (_, index) => 2001 + index);
-  $('manufactureYear').innerHTML = '<option value="">Año</option>' + years.map(year => `<option>${year}</option>`).join('');
-  $('retestYear').innerHTML = '<option value="">Año</option>' + years.map(year => `<option>${year}</option>`).join('');
-  syncDateFields();
-}
-
-function syncDateFields() {
-  $('manufacture').value = $('manufactureMonth').value && $('manufactureYear').value ? `${$('manufactureMonth').value}-${$('manufactureYear').value}` : '';
-  const noRetest = $('retestMonth').value === '-';
-  $('retestYear').disabled = noRetest;
-  $('retest').value = noRetest ? '-' : ($('retestMonth').value && $('retestYear').value ? `${$('retestMonth').value}-${$('retestYear').value}` : '');
-  updateExpiry();
-}
-
-function setDateSelectors(prefix, value) {
-  const normalized = normalizeDate(value || '');
-  if (prefix === 'retest' && (!normalized || normalized === '-')) {
-    $('retestMonth').value = '-'; $('retestYear').value = ''; syncDateFields(); return;
-  }
-  const match = normalized.match(/^(\d{2})-(\d{4})$/);
-  $(`${prefix}Month`).value = match?.[1] || '';
-  $(`${prefix}Year`).value = match?.[2] || '';
-  syncDateFields();
-}
-
-function showView(id) {
-  views.forEach(v => v.classList.toggle('active', v.id === id));
-  window.scrollTo({ top: 0, behavior: 'instant' });
-  if (id === 'historyView') renderHistory();
-}
-
-function toast(message) {
-  const el = $('toast');
-  el.textContent = message;
-  el.classList.add('show');
-  clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => el.classList.remove('show'), 2600);
-}
-
-function normalizeDate(value) {
-  const match = String(value).trim().match(/^(0?[1-9]|1[0-2])[-/. ](\d{2}|\d{4})$/);
-  if (!match) return value.trim();
-  const year = match[2].length === 2 ? `20${match[2]}` : match[2];
-  return `${match[1].padStart(2, '0')}-${year}`;
-}
-
-function normalizeKey(value) {
-  return String(value).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '');
-}
-
-function fieldFrom(record, ...aliases) {
-  const fields = new Map(Object.entries(record || {}).map(([key, value]) => [normalizeKey(key), value]));
-  for (const alias of aliases) if (fields.has(normalizeKey(alias))) return fields.get(normalizeKey(alias));
-  return '';
-}
-
-function normalizeImportedModel(value) {
-  const raw = String(value || '').toUpperCase().replace(/,/g, '.').replace(/\s+/g, ' ').trim();
-  if (!raw) return '';
-  if (/^(ABC\s*)?\d+\s*K(G)?$/.test(raw)) return `ABC ${raw.match(/\d+/)[0]} KG`;
-  if (/^(CO2\s*)?\d+\s*CO2(\s*KG)?$/.test(raw)) return `CO2 ${raw.match(/\d+/)[0]} KG`;
-  if (/^CO2\s*\d+\s*KG$/.test(raw) || /^ABC\s*\d+\s*KG$/.test(raw)) return raw.replace(/\s+/g, ' ');
-  return raw;
-}
-
-function normalizeImportedSignal(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  if (!raw || raw === 's' || raw.includes('sin señal') || raw.includes('sin senal')) return 'S';
-  if (raw === 'c' || raw.includes('caducada')) return 'C';
-  const year = raw.match(/20(18|19|20|21|22|23|24|25|26)|\b(18|19|20|21|22|23|24|25|26)\b/);
-  return year ? (year[0].length === 2 ? `20${year[0]}` : year[0]) : 'S';
-}
-
-function matchDefect(value) {
-  const key = normalizeKey(value);
-  if (key.includes('caducad')) return DEFECTS[0];
-  if (key.includes('obstaculo')) return DEFECTS[1];
-  if (key.includes('descargad')) return DEFECTS[2];
-  if (key.includes('sinpresion')) return DEFECTS[3];
-  if (key.includes('suelo')) return DEFECTS[4];
-  if (key.includes('cristal') && (key.includes('roto') || key.includes('ausente') || key.includes('sincristal'))) return DEFECTS[5];
-  return '';
-}
-
-function importedEquipment(record) {
-  const manufacture = normalizeDate(fieldFrom(record, 'fabricacion', 'fabrica', 'fecha fabricacion'));
-  const defectValue = fieldFrom(record, 'defectos');
-  const rawDefects = Array.isArray(defectValue) ? defectValue : defectValue ? [defectValue] : [];
-  const observationValue = fieldFrom(record, 'otraObservacion', 'observacion', 'observaciones');
-  const observationItems = Array.isArray(observationValue) ? observationValue : observationValue ? [observationValue] : [];
-  const defects = [...new Set([...rawDefects, ...observationItems].map(matchDefect).filter(Boolean))];
-  const otherObservation = Array.isArray(observationValue) ? observationValue.filter(value => !matchDefect(value)).join(' ') : String(observationValue || '').trim();
-  return {
-    syco: String(fieldFrom(record, 'syco', 'numero syco', 'num') || '').replace(/^syco\s*/i, '').trim(),
-    plate: String(fieldFrom(record, 'placa', 'numero placa', 'n placa') || '').trim(),
-    model: normalizeImportedModel(fieldFrom(record, 'modelo', 'model')),
-    manufacture,
-    retest: normalizeDate(fieldFrom(record, 'retimbrado', 'retimbre') || '-'),
-    signal: normalizeImportedSignal(fieldFrom(record, 'senal', 'señal')),
-    expiry: expiryFrom(manufacture), operation: 'Revisión', efficiency: '', defects, otherObservation,
-    observations: otherObservation ? [otherObservation] : [],
-    photos: { label: '', equipment: ['', '', '', ''] }
-  };
-}
-
-function parseChatGPTImport(text) {
-  const clean = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-  if (!clean) throw new Error('Pega primero el resultado de ChatGPT');
-  const parsed = JSON.parse(clean);
-  const records = Array.isArray(parsed) ? parsed : Array.isArray(parsed.extintores) ? parsed.extintores : [parsed];
-  if (!records.length) throw new Error('No hay extintores en el texto');
-  return records.map(importedEquipment);
-}
-
-function expiryFrom(value) {
-  const match = normalizeDate(value).match(/(\d{4})$/);
-  return match ? String(Number(match[1]) + 20) : '';
-}
-
-function renderWork() {
-  $('workClient').textContent = `${currentJob.client} · ${currentJob.operator}`;
-  $('equipmentCount').textContent = currentJob.equipment.length;
-  const list = $('equipmentList');
-  list.innerHTML = currentJob.equipment.length ? '' : '<div class="empty">Aún no hay extintores.<br>Pulsa “Añadir extintor” para comenzar.</div>';
-  currentJob.equipment.forEach((item, index) => {
-    const card = document.createElement('article');
-    card.className = 'equipment-card';
-    const incomplete = !item.syco || !item.plate || !item.model || !item.expiry;
-    card.innerHTML = `<div><strong>SYCo ${escapeHtml(item.syco || 'sin número')}</strong><p>${escapeHtml(item.model || 'Modelo pendiente')} · Placa ${escapeHtml(item.plate || 'pendiente')}${incomplete ? ' · Revisar datos' : ''}</p></div><span class="arrow">›</span>`;
-    card.onclick = () => openForm(index);
-    list.append(card);
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
   });
 }
 
-function openForm(index = -1) {
-  editingIndex = index;
-  const item = index >= 0 ? currentJob.equipment[index] : null;
-  pendingPhotos = item ? JSON.parse(JSON.stringify(item.photos || { label:'', equipment:[] })) : { label: '', equipment: ['', '', '', ''] };
-  pendingPhotos.equipment = [...(pendingPhotos.equipment || []), '', '', '', ''].slice(0, 4);
-  $('formTitle').textContent = item ? `SYCo ${item.syco}` : 'Nuevo extintor';
-  $('syco').value = item?.syco || '';
-  $('plate').value = item?.plate || '';
-  $('model').value = item?.model || '';
-  setDateSelectors('manufacture', item?.manufacture || '');
-  setDateSelectors('retest', item?.retest || '-');
-  $('signal').value = item?.signal || 'S';
-  const savedDefects = item?.defects || (item?.observations || []).map(matchDefect).filter(Boolean);
-  document.querySelectorAll('input[name="defect"]').forEach(input => input.checked = savedDefects.includes(input.value));
-  $('otherObservation').value = item?.otherObservation || (item?.observations || []).filter(value => !matchDefect(value)).join(' ') || '';
-  $('deleteEquipment').classList.toggle('hidden', index < 0);
-  updateExpiry();
-  refreshPhotoPreviews();
-  showView('formView');
+async function readState() {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readonly");
+    const request = tx.objectStore(STORE_NAME).get("records");
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
 }
 
-function updateExpiry() {
-  $('expiry').textContent = expiryFrom($('manufacture').value) || '—';
+async function writeState(value) {
+  const db = await openDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    tx.objectStore(STORE_NAME).put(value, "records");
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
-function refreshPhotoPreviews() {
-  setPreview($('labelPhotoPreview'), pendingPhotos.label);
-  document.querySelectorAll('.equipment-photo').forEach(input => setPreview(input.nextElementSibling, pendingPhotos.equipment[Number(input.dataset.index)]));
-}
-
-function setPreview(element, dataUrl) {
-  element.classList.toggle('has-photo', Boolean(dataUrl));
-  element.style.backgroundImage = dataUrl ? `url(${dataUrl})` : '';
-}
-
-function openPhotoForm(type, record = null) {
-  currentPhotoType = type;
-  editingPhotoRecordId = record?.id || '';
-  photoRecordPhotos = [...(record?.photos || []), '', ''].slice(0, 2);
-  $('photoFormTitle').textContent = photoTypeLabel(type).singular;
-  $('photoRecordForm').reset();
-  $('photoDefectList').innerHTML = PHOTO_DEFECTS[type].map(defect => `<label><input type="checkbox" name="photoDefect" value="${escapeHtml(defect)}"><span>${escapeHtml(defect.replace(/\.$/, ''))}</span></label>`).join('');
-  if (record) {
-    $('photoBuilding').value = record.building || '';
-    $('photoNumber').value = record.number || '';
-    $('photoOther1').value = record.other1 || '';
-    $('photoOther2').value = record.other2 || '';
-    $('photoOther3').value = record.other3 || '';
-    $('photoObservation').value = record.observation || '';
-    const savedDefects = new Set(record.defects || []);
-    document.querySelectorAll('input[name="photoDefect"]').forEach(input => input.checked = savedDefects.has(input.value));
-  }
-  $('photoRecordSubmit').textContent = record ? 'Guardar cambios' : 'Guardar ficha';
-  document.querySelectorAll('.record-photo-input').forEach(input => { input.value = ''; });
-  refreshRecordPhotoPreviews();
-  showView('photoFormView');
-}
-
-async function openPhotoRecords() {
-  $('photoRecordsTitle').textContent = photoTypeLabel(currentPhotoType).plural;
-  $('photoNumberFilter').value = '';
+async function loadRecords() {
   try {
-    photoRecordsCache = (await getPhotoRecords())
-      .filter(record => record.type === currentPhotoType)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    renderPhotoRecords();
-    showView('photoRecordsView');
-  } catch { toast('No se pudieron leer los registros guardados'); }
-}
-
-function renderPhotoRecords() {
-  const query = $('photoNumberFilter').value.trim().toLowerCase();
-  const records = photoRecordsCache.filter(record => String(record.number || '').toLowerCase().includes(query));
-  $('photoRecordsCount').textContent = `${records.length} registro${records.length === 1 ? '' : 's'}`;
-  $('photoRecordsEmpty').classList.toggle('hidden', records.length > 0);
-  $('photoRecordsBody').innerHTML = records.map(record => {
-    const defects = (record.defects || []).map(escapeHtml).join('<br>') || '—';
-    const observation = record.observation ? escapeHtml(record.observation) : '—';
-    const photos = (record.photos || []).filter(Boolean).length;
-    const date = record.createdAt ? new Date(record.createdAt).toLocaleDateString('es-ES') : '—';
-    return `<tr><td>${escapeHtml(record.building)}</td><td><strong>${escapeHtml(record.number)}</strong></td><td>${escapeHtml(record.other1 || '—')}</td><td>${escapeHtml(record.other2 || '—')}</td><td>${escapeHtml(record.other3 || '—')}</td><td>${defects}</td><td>${observation}</td><td>${photos}</td><td>${date}</td><td><button type="button" class="view-record" data-record-id="${escapeHtml(record.id)}">Ver</button></td></tr>`;
-  }).join('');
-}
-
-function openPhotoRecordDetail(id) {
-  const record = photoRecordsCache.find(item => item.id === id);
-  if (!record) return toast('No se ha encontrado este registro');
-  selectedPhotoRecord = record;
-  const label = photoTypeLabel(record.type);
-  $('photoDetailType').textContent = label.record;
-  $('photoDetailTitle').textContent = `${label.singular} ${record.number}`;
-  $('photoDetailBuilding').textContent = record.building || '—';
-  $('photoDetailNumber').textContent = record.number || '—';
-  $('photoDetailOther1').textContent = record.other1 || '—';
-  $('photoDetailOther2').textContent = record.other2 || '—';
-  $('photoDetailOther3').textContent = record.other3 || '—';
-  $('photoDetailObservation').textContent = record.observation || '—';
-  $('photoDetailDate').textContent = record.createdAt ? new Date(record.createdAt).toLocaleString('es-ES') : '—';
-  $('photoDetailDefects').innerHTML = (record.defects || []).length ? record.defects.map(defect => `<li>${escapeHtml(defect)}</li>`).join('') : '<li>Sin defectos marcados</li>';
-  renderDetailPhotos();
-  showView('photoRecordDetailView');
-}
-
-function renderDetailPhotos() {
-  const container = $('photoDetailImages');
-  container.innerHTML = '';
-  const photos = [...(selectedPhotoRecord?.photos || []), '', ''].slice(0, 2);
-  photos.forEach((photo, index) => {
-    const slot = document.createElement('div');
-    slot.className = 'detail-photo-slot';
-    if (photo) {
-      const image = document.createElement('img');
-      image.src = photo; image.alt = `Foto ${index + 1} del registro`;
-      slot.append(image);
-    } else {
-      const empty = document.createElement('div');
-      empty.className = 'empty-photo'; empty.textContent = `Foto ${index + 1} sin cargar`;
-      slot.append(empty);
+    const saved = await readState();
+    if (Array.isArray(saved)) {
+      records = saved.map(cleanRecord);
+      return;
     }
-    const changeLabel = document.createElement('label');
-    changeLabel.className = 'replace-photo';
-    changeLabel.textContent = photo ? 'Cambiar foto' : 'Añadir foto';
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = 'image/*'; input.setAttribute('capture', 'environment');
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      try { await updateDetailPhoto(index, await compressImage(file)); toast(`Foto ${index + 1} guardada`); }
-      catch { toast('No se pudo guardar esta fotografía'); }
-    };
-    changeLabel.append(input); slot.append(changeLabel);
-    const remove = document.createElement('button');
-    remove.type = 'button'; remove.className = 'delete-photo'; remove.textContent = 'Eliminar foto'; remove.disabled = !photo;
-    remove.onclick = async () => {
-      if (!confirm(`¿Eliminar la foto ${index + 1} de este registro?`)) return;
-      try { await updateDetailPhoto(index, ''); toast(`Foto ${index + 1} eliminada`); }
-      catch { toast('No se pudo eliminar esta fotografía'); }
-    };
-    slot.append(remove); container.append(slot);
+  } catch {}
+  records = (window.INITIAL_EXTINTORES_LISTADOS || []).map(cleanRecord);
+  await saveRecords();
+}
+
+async function saveRecords() {
+  records = records.map(cleanRecord);
+  updateStats();
+  await writeState(records);
+}
+
+function updateStats() {
+  const total = records.length;
+  const seen = records.filter((record) => record.visto).length;
+  $("totalCount").textContent = total;
+  $("seenCount").textContent = seen;
+  $("pendingCount").textContent = total - seen;
+}
+
+function showView(name) {
+  $("homeView").classList.toggle("hidden", name !== "home");
+  $("listView").classList.toggle("hidden", name !== "list");
+  $("correctivosView").classList.toggle("hidden", name !== "correctivos");
+  $("checklistView").classList.toggle("hidden", name !== "checklist");
+  $("retimbradosView").classList.toggle("hidden", name !== "retimbrados");
+  $("caducadosView").classList.toggle("hidden", name !== "caducados");
+  $("formView").classList.toggle("hidden", name !== "form");
+  if (name === "list") renderTable();
+  if (name === "correctivos") renderCorrectivos();
+  if (name === "checklist") renderChecklist();
+  if (name === "retimbrados") renderRetimbrados();
+  if (name === "caducados") renderCaducados();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+function compareText(a, b) {
+  return safeText(a).localeCompare(safeText(b), "es", { numeric: true, sensitivity: "base" });
+}
+
+function filteredRecords() {
+  const filterEdificio = $("filterEdificio").value.trim().toLowerCase();
+  const filterNumero = $("filterNumero").value.trim().toLowerCase();
+  const filterSerie = $("filterSerie").value.trim().toLowerCase();
+  const seenFilter = $("seenFilter").value;
+  const sortOrder = $("sortOrder").value;
+
+  const rows = records.filter((record) => {
+    if (seenFilter === "seen" && !record.visto) return false;
+    if (seenFilter === "pending" && record.visto) return false;
+    if (filterEdificio && ![record.edificio, record.ubicacion].join(" ").toLowerCase().includes(filterEdificio)) return false;
+    if (filterNumero && !safeText(record.cantidad).toLowerCase().includes(filterNumero)) return false;
+    if (filterSerie && ![record.modelo, record.numeroSerie, record.fechaFabricacion, record.fechaProximoRetimbrado].join(" ").toLowerCase().includes(filterSerie)) return false;
+    return true;
   });
+
+  if (sortOrder === "edificio") rows.sort((a, b) => compareText(a.edificio, b.edificio) || compareText(a.cantidad, b.cantidad));
+  if (sortOrder === "numero") rows.sort((a, b) => compareText(a.cantidad, b.cantidad) || compareText(a.edificio, b.edificio));
+  return rows;
 }
 
-async function updateDetailPhoto(index, value) {
-  if (!selectedPhotoRecord) throw new Error('Registro no seleccionado');
-  const previous = [...(selectedPhotoRecord.photos || [])];
-  const updated = [...previous, '', ''].slice(0, 2);
-  updated[index] = value;
-  selectedPhotoRecord.photos = updated;
-  try {
-    await savePhotoRecord(selectedPhotoRecord);
-    photoRecordsCache = photoRecordsCache.map(record => record.id === selectedPhotoRecord.id ? selectedPhotoRecord : record);
-    renderPhotoRecords();
-    renderDetailPhotos();
-  } catch (error) { selectedPhotoRecord.photos = previous; throw error; }
-}
-
-function refreshRecordPhotoPreviews() {
-  photoRecordPhotos.forEach((photo, index) => {
-    setPreview($(`photoRecordPreview${index}`), photo);
-    $(`deleteRecordPhoto${index}`).disabled = !photo;
-  });
-}
-
-async function readRecordPhoto(input) {
-  const file = input.files?.[0];
-  if (!file) return;
-  try {
-    photoRecordPhotos[Number(input.dataset.index)] = await compressImage(file);
-    refreshRecordPhotoPreviews();
-  } catch { toast('No se pudo procesar esta fotografía'); }
-}
-
-async function compressImage(file) {
-  const bitmap = await createImageBitmap(file);
-  const max = 1280;
-  const scale = Math.min(1, max / Math.max(bitmap.width, bitmap.height));
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(bitmap.width * scale);
-  canvas.height = Math.round(bitmap.height * scale);
-  canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-  bitmap.close();
-  return canvas.toDataURL('image/jpeg', .72);
-}
-
-async function readPhoto(input, setter) {
-  const file = input.files?.[0];
-  if (!file) return;
-  try { setter(await compressImage(file)); refreshPhotoPreviews(); }
-  catch { toast('No se pudo procesar esta fotografía'); }
-}
-
-function equipmentFromForm() {
-  const defects = [...document.querySelectorAll('input[name="defect"]:checked')].map(input => input.value);
-  const otherObservation = $('otherObservation').value.trim();
-  return {
-    syco: $('syco').value.trim(), plate: $('plate').value.trim(), model: $('model').value,
-    manufacture: normalizeDate($('manufacture').value), retest: normalizeDate($('retest').value || '-'),
-    signal: $('signal').value, expiry: expiryFrom($('manufacture').value),
-    operation: 'Revisión', efficiency: '', defects, otherObservation,
-    observations: otherObservation ? [otherObservation] : [],
-    photos: pendingPhotos
-  };
-}
-
-function startRecognition(button, onText) {
-  const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SpeechRecognition) return toast('El dictado no está disponible en este navegador');
-  const recognition = new SpeechRecognition();
-  recognition.lang = 'es-ES';
-  recognition.interimResults = false;
-  button.classList.add('listening');
-  recognition.onresult = event => onText(event.results[0][0].transcript);
-  recognition.onerror = () => toast('No he podido entender el dictado');
-  recognition.onend = () => button.classList.remove('listening');
-  recognition.start();
-}
-
-function spokenDate(text, label) {
-  const numeric = text.match(new RegExp(`${label}\\s*(\\d{1,2})[\\s/.-]+(\\d{2,4})`, 'i'));
-  if (numeric) return normalizeDate(`${numeric[1]}-${numeric[2]}`);
-  const names = Object.keys(MONTH_NAMES).join('|');
-  const named = text.toLowerCase().match(new RegExp(`${label}\\s*(?:en\\s+)?(${names})(?:\\s+de)?\\s+(20\\d{2})`, 'i'));
-  return named ? `${MONTH_NAMES[named[1].toLowerCase()]}-${named[2]}` : '';
-}
-
-function parseDictation(text) {
-  const clean = text.replace(/número/gi, '').replace(/guion/gi, '-');
-  const take = regex => clean.match(regex)?.[1]?.trim() || '';
-  const syco = take(/(?:syco|sico|cico)\s*([\d ]+)/i).replace(/\s/g, '');
-  const plate = take(/placa\s*([\d ]+)/i).replace(/\s/g, '');
-  const modelRaw = take(/modelo\s*(\d+\s*(?:kilos?|kg|k|co2))/i).toUpperCase().replace(/\s+/g, ' ');
-  const date = spokenDate(clean, 'fabricaci[oó]n');
-  const retest = spokenDate(clean, 'retimbrado');
-  const noRetest = /(?:sin|ning[uú]n)\s+retimbrado|retimbrado\s+(?:sin|ninguno)/i.test(clean);
-  const signal = take(/señal\s*(sin|caducada|20(?:18|19|20|21|22|23|24|25|26)|18|19|20|21|22|23|24|25|26)/i);
-  if (syco) $('syco').value = syco;
-  if (plate) $('plate').value = plate;
-  if (modelRaw) {
-    const number = modelRaw.match(/\d+/)?.[0];
-    const model = /CO2/.test(modelRaw) ? `CO2 ${number} KG` : `ABC ${number} KG`;
-    if ([...$('model').options].some(o => o.value === model)) $('model').value = model;
+function renderTable() {
+  const body = $("recordsBody");
+  const rows = filteredRecords();
+  body.innerHTML = "";
+  if (!rows.length) {
+    body.innerHTML = `<tr><td colspan="14">No hay registros con ese filtro.</td></tr>`;
+    return;
   }
-  if (date) setDateSelectors('manufacture', date);
-  if (noRetest) setDateSelectors('retest', '-'); else if (retest) setDateSelectors('retest', retest);
-  if (signal) $('signal').value = /sin/i.test(signal) ? 'S' : /caducada/i.test(signal) ? 'C' : signal.length === 2 ? `20${signal}` : signal;
-  if (/caducad/i.test(clean)) document.querySelector('input[name="defect"][value="Extintor caducado."]').checked = true;
-  if (/obst[aá]culo/i.test(clean)) document.querySelector('input[name="defect"][value="Hay un obstáculo."]').checked = true;
-  if (/descargad/i.test(clean)) document.querySelector('input[name="defect"][value="Extintor descargado."]').checked = true;
-  if (/sin presi[oó]n/i.test(clean)) document.querySelector('input[name="defect"][value="Extintor sin presión."]').checked = true;
-  if (/en el suelo/i.test(clean)) document.querySelector('input[name="defect"][value="Extintor en el suelo."]').checked = true;
-  if (/(?:sin cristal|cristal.*roto|cristal.*ausente)/i.test(clean)) document.querySelector('input[name="defect"][value="Cristal del extintor ausente o roto."]').checked = true;
-  updateExpiry();
-  toast('Dictado recibido. Revisa los datos antes de guardar.');
-}
-
-function escapeHtml(value='') { return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
-function escapeXml(value='') { return String(value).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&apos;','"':'&quot;'}[c])); }
-
-function setCell(xml, ref, value) {
-  const cellPattern = new RegExp(`<c\\b([^>]*\\br="${ref}"[^>]*)\\s*\\/>|<c\\b([^>]*\\br="${ref}"[^>]*)>([\\s\\S]*?)<\\/c>`);
-  const match = xml.match(cellPattern);
-  const style = match ? (match[1] || match[2] || '').match(/\bs="([^"]+)"/)?.[1] : '';
-  const cell = `<c r="${ref}"${style ? ` s="${style}"` : ''} t="inlineStr"><is><t xml:space="preserve">${escapeXml(value)}</t></is></c>`;
-  if (match) return xml.replace(cellPattern, cell);
-  const rowNumber = ref.match(/\d+/)[0];
-  const rowPattern = new RegExp(`(<row\\b[^>]*\\br="${rowNumber}"[^>]*>)([\\s\\S]*?)(<\\/row>)`);
-  return xml.replace(rowPattern, `$1$2${cell}$3`);
-}
-
-function excelColumn(index) {
-  let result = '', value = index + 1;
-  while (value > 0) { value--; result = String.fromCharCode(65 + (value % 26)) + result; value = Math.floor(value / 26); }
-  return result;
-}
-
-function xlsxInlineCell(ref, value, style, prefix = '') {
-  return `<${prefix}c r="${ref}"${style ? ` s="${style}"` : ''} t="inlineStr"><${prefix}is><${prefix}t xml:space="preserve">${escapeXml(value)}</${prefix}t></${prefix}is></${prefix}c>`;
-}
-
-async function generatePhotoRecordsExcel() {
-  if (!photoRecordsCache.length) return toast('No hay registros para descargar');
-  try {
-    const Excel = globalThis.ExcelJS;
-    if (!Excel) throw new Error('No se ha cargado el generador Excel');
-    const workbook = new Excel.Workbook();
-    workbook.creator = 'Hidrantes';
-    workbook.created = new Date();
-    const typeName = photoTypeLabel(currentPhotoType).plural;
-    const sheet = workbook.addWorksheet(typeName, { views: [{ state: 'frozen', ySplit: 1 }] });
-    const defects = PHOTO_DEFECTS[currentPhotoType];
-    const headers = ['Fecha', 'Edificio', 'Número', 'Otro 1', 'Otro 2', 'Otro 3', ...defects.map(defect => defect.replace(/\.$/, '')), 'Observación', 'Foto 1', 'Foto 2'];
-    sheet.addRow(headers);
-    sheet.columns = headers.map((_, index) => ({ width: index === 0 ? 20 : index === 1 ? 25 : index === 2 ? 14 : index < 5 ? 18 : index >= headers.length - 2 ? 25 : 22 }));
-    const header = sheet.getRow(1);
-    header.height = 34;
-    header.eachCell(cell => {
-      cell.fill = { type:'pattern', pattern:'solid', fgColor:{argb:'FFB91C1C'} };
-      cell.font = { bold:true, color:{argb:'FFFFFFFF'} };
-      cell.alignment = { vertical:'middle', horizontal:'center', wrapText:true };
-      cell.border = { bottom:{style:'thin',color:{argb:'FF8C1515'}}, right:{style:'thin',color:{argb:'FF8C1515'}} };
-    });
-    const photoStartIndex = 7 + defects.length;
-    photoRecordsCache.forEach(record => {
-      const row = sheet.addRow([
-        record.createdAt ? new Date(record.createdAt) : '', record.building || '', String(record.number || ''),
-        record.other1 || '', record.other2 || '', record.other3 || '', ...defects.map(defect => (record.defects || []).includes(defect) ? 'X' : ''), record.observation || '', '', ''
-      ]);
-      row.height = (record.photos || []).some(Boolean) ? 95 : 28;
-      row.getCell(1).numFmt = 'dd/mm/yyyy hh:mm';
-      row.eachCell({ includeEmpty:true }, (cell, columnNumber) => {
-        cell.alignment = { vertical:'top', horizontal: columnNumber >= 7 && columnNumber < photoStartIndex + 1 ? 'center' : 'left', wrapText:true };
-        cell.border = { bottom:{style:'thin',color:{argb:'FFDED7D1'}}, right:{style:'thin',color:{argb:'FFDED7D1'}} };
-      });
-      [0, 1].forEach(photoIndex => {
-        const photo = record.photos?.[photoIndex];
-        if (!photo) { row.getCell(photoStartIndex + photoIndex + 1).value = 'Sin foto'; return; }
-        const imageId = workbook.addImage({ base64: photo, extension:'jpeg' });
-        sheet.addImage(imageId, {
-          tl: { col: photoStartIndex + photoIndex + 0.08, row: row.number - 1 + 0.08 },
-          ext: { width: 155, height: 115 }, editAs:'oneCell'
-        });
-      });
-    });
-    sheet.autoFilter = { from:'A1', to:`${excelColumn(headers.length - 1)}1` };
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `Registros_${typeName}_${new Date().toISOString().slice(0,10)}.xlsx`;
-    link.click(); setTimeout(() => URL.revokeObjectURL(link.href), 2000);
-    toast(`Excel de ${typeName} generado`);
-  } catch (error) { toast(error.message || 'No se pudo generar el Excel'); }
-}
-
-async function generateExcel(job) {
-  if (!job.equipment.length) return toast('Añade al menos un extintor');
-  const { unzipSync, zipSync, strFromU8, strToU8 } = await import('./vendor/fflate.js');
-  const response = await fetch('./15.006_I01_Extintores_2023_A4.xlsx');
-  const files = unzipSync(new Uint8Array(await response.arrayBuffer()));
-  const sheetPath = 'xl/worksheets/sheet1.xml';
-  let xml = strFromU8(files[sheetPath]);
-  xml = setCell(xml, 'C2', job.client);
-  job.equipment.slice(0, 46).forEach((item, index) => {
-    const row = 8 + index;
-    const observations = [...new Set([...(item.defects || []), item.otherObservation || '', ...(item.observations || []).filter(value => !matchDefect(value))].filter(Boolean))].join('\n');
-    const values = { A:item.syco, B:item.plate, C:item.model, D:'', E:item.manufacture, F:item.retest || '-', G:'Revisión', H:item.expiry, AM:observations };
-    Object.entries(values).forEach(([column, value]) => { xml = setCell(xml, `${column}${row}`, value); });
+  for (const record of rows) {
+    const defects = record.defectos.length ? record.defectos.join(" / ") : "-";
+    const photo1 = record.photos[0] ? `<img class="tablePhoto" src="${record.photos[0]}" alt="Foto 1">` : `<span class="noPhoto">—</span>`;
+    const photo2 = record.photos[1] ? `<img class="tablePhoto" src="${record.photos[1]}" alt="Foto 2">` : `<span class="noPhoto">—</span>`;
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${safeText(record.cliente) || "-"}</td>
+      <td>${safeText(record.edificio) || "-"}</td>
+      <td>${safeText(record.modelo) || "-"}</td>
+      <td><strong>${safeText(record.cantidad) || "-"}</strong></td>
+      <td>${safeText(record.ubicacion) || "-"}</td>
+      <td>${safeText(record.numeroSerie) || "-"}</td>
+      <td>${safeText(record.fechaFabricacion) || "-"}</td>
+      <td>${safeText(record.fechaProximoRetimbrado) || "-"}</td>
+      <td>${safeText(record.observaciones) || "-"}</td>
+      <td>${defects}</td>
+      <td>${photo1}</td>
+      <td>${photo2}</td>
+      <td><span class="${record.visto ? "ok" : "pending"}">${record.visto ? "Sí" : "No"}</span></td>
+      <td><button class="editBtn" data-edit="${record.id}">Ver / corregir</button></td>
+    `;
+    body.appendChild(tr);
+  }
+  body.querySelectorAll("[data-edit]").forEach((button) => {
+    button.addEventListener("click", () => openForm(button.dataset.edit));
   });
-  files[sheetPath] = strToU8(xml);
-  const output = zipSync(files, { level: 6 });
-  const blob = new Blob([output], { type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-  const safeClient = job.client.replace(/[^a-záéíóúñ0-9]+/gi, '_').replace(/^_|_$/g, '');
-  const a = document.createElement('a');
+}
+
+function reportDefectText(defect) {
+  return reportDefectLabels[defect] || defect;
+}
+
+function reportDefectKey(record) {
+  return (record.defectos || []).map(reportDefectText).join(" / ");
+}
+
+function recordsWithCorrectivos() {
+  return records
+    .filter((record) => Array.isArray(record.defectos) && record.defectos.length)
+    .map(cleanRecord)
+    .sort((a, b) =>
+      compareText(a.cliente, b.cliente) ||
+      compareText(reportDefectKey(a), reportDefectKey(b)) ||
+      compareText(a.edificio, b.edificio) ||
+      compareText(a.cantidad, b.cantidad)
+    );
+}
+
+function buildCorrectivosAnalysis() {
+  const correctivos = recordsWithCorrectivos();
+  const clients = new Map();
+  for (const record of correctivos) {
+    const clientName = safeText(record.cliente).trim() || "Correctivos";
+    if (!clients.has(clientName)) clients.set(clientName, new Map());
+    const groups = clients.get(clientName);
+    const key = reportDefectKey(record);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(record);
+  }
+  return { correctivos, clients };
+}
+
+function countCorrectivosGroups(clients) {
+  return Array.from(clients.values()).reduce((total, groups) => total + groups.size, 0);
+}
+
+function renderCorrectivos() {
+  const { correctivos, clients } = buildCorrectivosAnalysis();
+  const groupsCount = countCorrectivosGroups(clients);
+  $("correctivosCount").textContent = correctivos.length;
+  $("correctivosGroupsCount").textContent = groupsCount;
+  $("correctivosClientsCount").textContent = clients.size;
+  $("correctivosSummary").textContent = correctivos.length
+    ? `${correctivos.length} registros con defectos agrupados en ${groupsCount} bloques.`
+    : "No hay defectos registrados.";
+  $("downloadCorrectivosWordBtn").disabled = !correctivos.length;
+
+  const preview = $("correctivosPreview");
+  if (!correctivos.length) {
+    preview.innerHTML = `<p class="emptyReport">Cuando marques defectos en registros, aparecerá aquí el estudio de correctivos.</p>`;
+    return;
+  }
+
+  preview.innerHTML = Array.from(clients, ([clientName, groups]) => {
+    const groupRows = Array.from(groups, ([defects, rows]) => `
+      <div class="previewGroup">
+        <strong>${escapeHtml(defects)}</strong>
+        <span>${rows.length} registros</span>
+      </div>
+    `).join("");
+    return `
+      <div class="previewClient">
+        <h3>${escapeHtml(clientName)}</h3>
+        ${groupRows}
+      </div>
+    `;
+  }).join("");
+}
+
+function escapeHtml(value) {
+  return safeText(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function wordCell(value) {
+  return escapeHtml(value || "");
+}
+
+function correctivosWordHtml() {
+  const { correctivos, clients } = buildCorrectivosAnalysis();
+  const date = new Date().toLocaleDateString("es-ES");
+  const body = Array.from(clients, ([clientName, groups], clientIndex) => {
+    const blocks = Array.from(groups, ([defects, rows]) => {
+      const tableRows = rows.map((record) => `
+        <tr>
+          <td>${wordCell(record.edificio)}</td>
+          <td>${wordCell(record.modelo)}</td>
+          <td>${wordCell(record.cantidad)}</td>
+          <td>${wordCell(record.ubicacion)}</td>
+        </tr>
+      `).join("");
+      return `
+        <h2>${escapeHtml(defects)}</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Edificio</th>
+              <th>Tipo</th>
+              <th>Número</th>
+              <th>Ubicación</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      `;
+    }).join("");
+    return `
+      <section class="${clientIndex ? "pageBreak" : ""}">
+        <h1>Listado de incidencias de hidrantes</h1>
+        <p class="client">${escapeHtml(clientName)}</p>
+        ${blocks}
+      </section>
+    `;
+  }).join("");
+
+  return `<!doctype html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+  <meta charset="utf-8">
+  <title>Listado de incidencias de hidrantes</title>
+  <style>
+    @page { size: 8.5in 11in; margin: .55in .55in .55in .55in; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 10.5pt; }
+    h1 { text-align: center; font-size: 20pt; margin: 18pt 0 18pt; font-weight: 700; }
+    .client { text-align: center; font-size: 16pt; font-weight: 700; margin: 0 0 18pt; }
+    .meta { color: #555; font-size: 9pt; text-align: right; margin: 0 0 10pt; }
+    h2 { color: #8a1538; font-size: 14pt; margin: 22pt 0 6pt .2in; font-weight: 700; }
+    table { border-collapse: collapse; width: 100%; margin: 0 0 22pt; table-layout: fixed; }
+    th, td { border: 1px solid #000; padding: 2pt 5pt; vertical-align: top; line-height: 1.05; }
+    th { background: #d9eaf7; text-align: left; font-weight: 700; }
+    th:nth-child(1), td:nth-child(1) { width: 25%; }
+    th:nth-child(2), td:nth-child(2) { width: 25%; }
+    th:nth-child(3), td:nth-child(3) { width: 25%; }
+    th:nth-child(4), td:nth-child(4) { width: 25%; }
+    .pageBreak { page-break-before: always; }
+  </style>
+</head>
+<body>
+  <p class="meta">Generado el ${escapeHtml(date)}. Registros correctivos: ${correctivos.length}.</p>
+  ${body}
+</body>
+</html>`;
+}
+
+function downloadCorrectivosWord() {
+  const { correctivos } = buildCorrectivosAnalysis();
+  if (!correctivos.length) {
+    alert("No hay registros con defectos para generar el Word de correctivos.");
+    return;
+  }
+  const blob = new Blob(["\ufeff", correctivosWordHtml()], { type: "application/msword;charset=utf-8" });
+  const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `Extintores_${safeClient || 'cliente'}_${new Date().toISOString().slice(0,10)}.xlsx`;
+  a.download = `Correctivos_hidrantes_${new Date().toISOString().slice(0, 10)}.doc`;
   a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  toast('Excel generado correctamente');
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-async function renderHistory() {
-  const jobs = (await getJobs()).sort((a,b) => b.updatedAt.localeCompare(a.updatedAt));
-  $('historyCount').textContent = jobs.length;
-  const list = $('historyList');
-  list.innerHTML = jobs.length ? '' : '<div class="empty">Todavía no hay trabajos guardados.</div>';
-  jobs.forEach(job => {
-    const card = document.createElement('article');
-    card.className = 'equipment-card';
-    card.innerHTML = `<div><strong>${escapeHtml(job.client)}</strong><p>${job.equipment.length} extintores · ${new Date(job.updatedAt).toLocaleDateString('es-ES')}</p></div><span class="arrow">›</span>`;
-    card.onclick = async () => { currentJob = await getJob(job.id); renderWork(); showView('workView'); };
-    list.append(card);
+function pendingRetimbradoRecords() {
+  return records
+    .map(cleanRecord)
+    .filter((record) => {
+      const fabricacion = parseYear(record.fechaFabricacion);
+      const retimbrado = parseYear(record.fechaProximoRetimbrado);
+      return fabricacion !== null && retimbrado !== null && fabricacion <= 2021 && retimbrado >= 2008 && retimbrado <= 2021;
+    })
+    .sort((a, b) =>
+      compareText(a.edificio, b.edificio) ||
+      compareText(a.cantidad, b.cantidad) ||
+      compareText(a.numeroSerie, b.numeroSerie)
+    );
+}
+
+function updateRetimbradosSummary() {
+  const pending = pendingRetimbradoRecords();
+  const summary = $("retimbradosSummary");
+  if (summary) summary.textContent = pending.length
+    ? `${pending.length} extintores pendientes de retimbrar.`
+    : "No hay extintores pendientes de retimbrar con esos criterios.";
+  const button = $("downloadRetimbradosWordBtn");
+  if (button) button.disabled = !pending.length;
+  const economicButton = $("downloadRetimbradosEconomicoWordBtn");
+  if (economicButton) economicButton.disabled = !pending.length;
+}
+
+function renderRetimbrados() {
+  updateRetimbradosSummary();
+}
+
+function retimbradosWordHtml() {
+  const pending = pendingRetimbradoRecords();
+  const date = new Date().toLocaleDateString("es-ES");
+  const rows = pending.map((record) => `
+    <tr>
+      <td>${wordCell(record.edificio)}</td>
+      <td>${wordCell(record.cantidad)}</td>
+      <td>${wordCell(record.numeroSerie)}</td>
+      <td>${wordCell(record.modelo)}</td>
+      <td>${wordCell(record.fechaFabricacion)}</td>
+      <td>${wordCell(record.fechaProximoRetimbrado)}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+  <meta charset="utf-8">
+  <title>EXTINTORES PENDIENTES DE RETIMBRADO</title>
+  <style>
+    @page { size: 8.5in 11in; margin: .65in .65in .65in .65in; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 10.5pt; }
+    h1 { text-align: center; font-size: 18pt; font-weight: 700; margin: 18pt 0 24pt; }
+    table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+    th, td { border: 1px solid #000; padding: 5pt 6pt; vertical-align: middle; line-height: 1.2; }
+    th { background: #d9eaf7; font-weight: 700; text-align: center; }
+    td { text-align: left; }
+    th:nth-child(1), td:nth-child(1) { width: 24%; }
+    th:nth-child(2), td:nth-child(2) { width: 14%; text-align: center; }
+    th:nth-child(3), td:nth-child(3) { width: 17%; text-align: center; }
+    th:nth-child(4), td:nth-child(4) { width: 17%; text-align: center; }
+    th:nth-child(5), td:nth-child(5) { width: 14%; text-align: center; }
+    th:nth-child(6), td:nth-child(6) { width: 14%; text-align: center; }
+    .date { text-align: right; margin-top: 28pt; font-size: 11pt; }
+  </style>
+</head>
+<body>
+  <h1><strong>EXTINTORES PENDIENTES DE RETIMBRADO</strong></h1>
+  <table>
+    <thead>
+      <tr>
+        <th>Edificio</th>
+        <th>Número de extintor</th>
+        <th>Número de serie</th>
+        <th>Modelo</th>
+        <th>Fecha de fabricación</th>
+        <th>Fecha retimbrado</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <p class="date">${escapeHtml(date)}</p>
+</body>
+</html>`;
+}
+
+function modelSummary(recordsList) {
+  const groups = new Map();
+  for (const record of recordsList) {
+    const model = safeText(record.modelo).trim() || "Sin modelo";
+    groups.set(model, (groups.get(model) || 0) + 1);
+  }
+  return Array.from(groups, ([modelo, unidades]) => ({ modelo, unidades }))
+    .sort((a, b) => compareText(a.modelo, b.modelo));
+}
+
+function styleEconomicCell(cell, options = {}) {
+  cell.border = {
+    top: { style: "thin" },
+    left: { style: "thin" },
+    bottom: { style: "thin" },
+    right: { style: "thin" },
+  };
+  cell.alignment = { vertical: "middle", horizontal: options.align || "center", wrapText: true };
+  if (options.bold) cell.font = { bold: true };
+  if (options.fill) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: options.fill } };
+}
+
+async function downloadEconomicExcel(title, recordsList, filePrefix) {
+  if (!window.ExcelJS) return alert("No se ha cargado el generador de Excel.");
+  if (!recordsList.length) {
+    alert("No hay registros para generar el resumen económico.");
+    return;
+  }
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "Correctivos";
+  workbook.created = new Date();
+  workbook.calcProperties.fullCalcOnLoad = true;
+  const sheet = workbook.addWorksheet("Resumen económico");
+  sheet.columns = [
+    { key: "unidades", width: 18 },
+    { key: "modelo", width: 34 },
+    { key: "precio", width: 16 },
+    { key: "importe", width: 18 },
+  ];
+  sheet.mergeCells("A2:D2");
+  sheet.getCell("A2").value = title;
+  sheet.getCell("A2").font = { bold: true, size: 14 };
+  sheet.getCell("A2").alignment = { horizontal: "center", vertical: "middle" };
+  sheet.getRow(2).height = 24;
+
+  ["UNIDADES", "MODELO", "PRECIO", "IMPORTE"].forEach((header, index) => {
+    const cell = sheet.getRow(4).getCell(index + 1);
+    cell.value = header;
+    styleEconomicCell(cell, { bold: true, fill: "FFEAD1D9" });
+  });
+
+  const items = modelSummary(recordsList);
+  items.forEach((item, index) => {
+    const rowNumber = 5 + index;
+    const row = sheet.getRow(rowNumber);
+    row.getCell(1).value = item.unidades;
+    row.getCell(2).value = item.modelo;
+    row.getCell(3).value = "";
+    row.getCell(4).value = { formula: `A${rowNumber}*C${rowNumber}` };
+    row.getCell(3).numFmt = '#,##0.00 "€"';
+    row.getCell(4).numFmt = '#,##0.00 "€"';
+    [1, 2, 3, 4].forEach((col) => styleEconomicCell(row.getCell(col), { align: col === 2 ? "left" : "center" }));
+  });
+
+  const firstDataRow = 5;
+  const lastDataRow = Math.max(firstDataRow, firstDataRow + items.length - 1);
+  const totalRow = lastDataRow + 1;
+  const ivaRow = totalRow + 1;
+  const sumaRow = ivaRow + 1;
+  [
+    [totalRow, "TOTAL", `SUM(D${firstDataRow}:D${lastDataRow})`],
+    [ivaRow, "IVA", `D${totalRow}*21/100`],
+    [sumaRow, "SUMA TOTAL", `SUM(D${totalRow}:D${ivaRow})`],
+  ].forEach(([rowNumber, label, formula]) => {
+    const row = sheet.getRow(rowNumber);
+    row.getCell(3).value = label;
+    row.getCell(4).value = { formula };
+    row.getCell(4).numFmt = '#,##0.00 "€"';
+    styleEconomicCell(row.getCell(3), { bold: true, fill: "FFEAD1D9" });
+    styleEconomicCell(row.getCell(4), { bold: true });
+  });
+
+  sheet.getCell(`A${sumaRow + 2}`).value = new Date().toLocaleDateString("es-ES");
+  sheet.getCell(`A${sumaRow + 2}`).alignment = { horizontal: "right" };
+  sheet.mergeCells(`A${sumaRow + 2}:D${sumaRow + 2}`);
+  sheet.views = [{ state: "frozen", ySplit: 4 }];
+  const blob = new Blob([await workbook.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${filePrefix}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function downloadRetimbradosWord() {
+  const pending = pendingRetimbradoRecords();
+  if (!pending.length) {
+    alert("No hay extintores pendientes de retimbrar con esos criterios.");
+    return;
+  }
+  const blob = new Blob(["\ufeff", retimbradosWordHtml()], { type: "application/msword;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `Extintores_pendientes_retimbrado_${new Date().toISOString().slice(0, 10)}.doc`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function downloadRetimbradosEconomicoWord() {
+  downloadEconomicExcel("EXTINTORES PENDIENTES DE RETIMBRADO", pendingRetimbradoRecords(), "Resumen_economico_retimbrados");
+}
+
+function caducidadYear(record) {
+  const fabricacion = parseYear(record.fechaFabricacion);
+  return fabricacion === null ? null : fabricacion + 20;
+}
+
+function caducadosRecords() {
+  const currentYear = new Date().getFullYear();
+  return records
+    .map(cleanRecord)
+    .filter((record) => {
+      const caducidad = caducidadYear(record);
+      return caducidad !== null && caducidad <= currentYear;
+    })
+    .sort((a, b) =>
+      compareText(a.edificio, b.edificio) ||
+      compareText(a.cantidad, b.cantidad) ||
+      compareText(a.numeroSerie, b.numeroSerie)
+    );
+}
+
+function renderCaducados() {
+  const caducados = caducadosRecords();
+  const summary = $("caducadosSummary");
+  if (summary) summary.textContent = caducados.length
+    ? `${caducados.length} extintores caducados.`
+    : "No hay extintores caducados.";
+  const button = $("downloadCaducadosWordBtn");
+  if (button) button.disabled = !caducados.length;
+  const economicButton = $("downloadCaducadosEconomicoWordBtn");
+  if (economicButton) economicButton.disabled = !caducados.length;
+}
+
+function caducadosWordHtml() {
+  const caducados = caducadosRecords();
+  const date = new Date().toLocaleDateString("es-ES");
+  const rows = caducados.map((record) => `
+    <tr>
+      <td>${wordCell(record.edificio)}</td>
+      <td>${wordCell(record.cantidad)}</td>
+      <td>${wordCell(record.numeroSerie)}</td>
+      <td>${wordCell(record.modelo)}</td>
+      <td>${wordCell(record.fechaFabricacion)}</td>
+      <td>${wordCell(caducidadYear(record))}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
+<head>
+  <meta charset="utf-8">
+  <title>RELACION DE EXTINTORES CADUCADOS</title>
+  <style>
+    @page { size: 8.5in 11in; margin: .65in .65in .65in .65in; }
+    body { font-family: Arial, Helvetica, sans-serif; color: #000; font-size: 10.5pt; }
+    h1 { text-align: center; font-size: 18pt; font-weight: 700; margin: 18pt 0 24pt; }
+    table { border-collapse: collapse; width: 100%; table-layout: fixed; }
+    th, td { border: 1px solid #000; padding: 5pt 6pt; vertical-align: middle; line-height: 1.2; }
+    th { background: #d9eaf7; font-weight: 700; text-align: center; }
+    td { text-align: left; }
+    th:nth-child(1), td:nth-child(1) { width: 24%; }
+    th:nth-child(2), td:nth-child(2) { width: 14%; text-align: center; }
+    th:nth-child(3), td:nth-child(3) { width: 17%; text-align: center; }
+    th:nth-child(4), td:nth-child(4) { width: 17%; text-align: center; }
+    th:nth-child(5), td:nth-child(5) { width: 14%; text-align: center; }
+    th:nth-child(6), td:nth-child(6) { width: 14%; text-align: center; }
+    .date { text-align: right; margin-top: 28pt; font-size: 11pt; }
+  </style>
+</head>
+<body>
+  <h1><strong>RELACION DE EXTINTORES CADUCADOS</strong></h1>
+  <table>
+    <thead>
+      <tr>
+        <th>Edificio</th>
+        <th>Número de extintor</th>
+        <th>Número de serie</th>
+        <th>Modelo</th>
+        <th>Fecha de fabricación</th>
+        <th>Caducidad 20 A</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+  <p class="date">${escapeHtml(date)}</p>
+</body>
+</html>`;
+}
+
+function downloadCaducadosWord() {
+  const caducados = caducadosRecords();
+  if (!caducados.length) {
+    alert("No hay extintores caducados.");
+    return;
+  }
+  const blob = new Blob(["\ufeff", caducadosWordHtml()], { type: "application/msword;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `Relacion_extintores_caducados_${new Date().toISOString().slice(0, 10)}.doc`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function downloadCaducadosEconomicoWord() {
+  downloadEconomicExcel("RELACIÓN EXTINTORES CADUCADOS", caducadosRecords(), "Resumen_economico_caducados");
+}
+
+function checklistRecords() {
+  return records
+    .map(cleanRecord)
+    .filter((record) => [record.cliente, record.edificio, record.cantidad, record.modelo, record.numeroSerie].some((value) => safeText(value).trim()))
+    .sort((a, b) =>
+      compareText(a.cliente, b.cliente) ||
+      compareText(a.cantidad, b.cantidad) ||
+      compareText(a.edificio, b.edificio)
+    );
+}
+
+function checklistHeader(rows) {
+  const cliente = safeText(rows.find((record) => safeText(record.cliente).trim())?.cliente).trim();
+  const edificios = Array.from(new Set(rows.map((record) => safeText(record.edificio).trim()).filter(Boolean)));
+  const edificio = edificios.length === 1 ? edificios[0] : edificios.length > 1 ? "Varios edificios" : "";
+  return [cliente, edificio].filter(Boolean).join(". ") || "Checklist";
+}
+
+function buildChecklistPages() {
+  const recordsForChecklist = checklistRecords();
+  const pages = [];
+  for (let start = 0; start < recordsForChecklist.length; start += 20) {
+    const pageRecords = recordsForChecklist.slice(start, start + 20);
+    pages.push({ title: checklistHeader(pageRecords), records: pageRecords });
+  }
+  return pages;
+}
+
+function renderChecklist() {
+  const pages = buildChecklistPages();
+  const totalRecords = pages.reduce((total, page) => total + page.records.length, 0);
+  const clients = new Set(checklistRecords().map((record) => normalizeKeyPart(record.cliente)).filter(Boolean));
+  $("checklistCount").textContent = totalRecords;
+  $("checklistPagesCount").textContent = pages.length;
+  $("checklistClientsCount").textContent = clients.size;
+  $("checklistSummary").textContent = totalRecords
+    ? `${totalRecords} registros preparados en ${pages.length} hojas ordenadas por número SYCo.`
+    : "No hay registros para rellenar.";
+  $("downloadChecklistBtn").disabled = !totalRecords;
+}
+
+function parseYear(value) {
+  const match = safeText(value).match(/\b(19|20)\d{2}\b/);
+  if (match) return Number(match[0]);
+  const shortYear = safeText(value).match(/\b\d{2}\b/);
+  if (shortYear) return 2000 + Number(shortYear[0]);
+  return null;
+}
+
+function checklistOperation(record) {
+  const text = normalizeSpeechText([record.observaciones, ...(record.defectos || [])].join(" "));
+  return text.includes("recarg") || text.includes("retimbrad") ? "Revisión y recarga" : "Revisión";
+}
+
+function copyCell(sourceCell, targetCell) {
+  targetCell.value = sourceCell.value;
+  targetCell.style = JSON.parse(JSON.stringify(sourceCell.style || {}));
+  if (sourceCell.numFmt) targetCell.numFmt = sourceCell.numFmt;
+}
+
+function copyTemplateSheet(workbook, sourceSheet, name) {
+  const sheet = workbook.addWorksheet(name);
+  sheet.pageSetup = JSON.parse(JSON.stringify(sourceSheet.pageSetup || {}));
+  sheet.pageMargins = JSON.parse(JSON.stringify(sourceSheet.pageMargins || {}));
+  sheet.headerFooter = JSON.parse(JSON.stringify(sourceSheet.headerFooter || {}));
+  sheet.views = JSON.parse(JSON.stringify(sourceSheet.views || []));
+  sheet.properties = JSON.parse(JSON.stringify(sourceSheet.properties || {}));
+
+  for (let col = 1; col <= sourceSheet.columnCount; col += 1) {
+    const sourceCol = sourceSheet.getColumn(col);
+    const targetCol = sheet.getColumn(col);
+    targetCol.width = sourceCol.width;
+    targetCol.hidden = sourceCol.hidden;
+    targetCol.outlineLevel = sourceCol.outlineLevel;
+  }
+
+  for (let rowNumber = 1; rowNumber <= sourceSheet.rowCount; rowNumber += 1) {
+    const sourceRow = sourceSheet.getRow(rowNumber);
+    const targetRow = sheet.getRow(rowNumber);
+    targetRow.height = sourceRow.height;
+    for (let col = 1; col <= sourceSheet.columnCount; col += 1) {
+      copyCell(sourceRow.getCell(col), targetRow.getCell(col));
+    }
+  }
+
+  (sourceSheet.model?.merges || []).forEach((range) => sheet.mergeCells(range));
+  return sheet;
+}
+
+function clearChecklistRows(sheet) {
+  for (let row = 8; row <= 27; row += 1) {
+    for (let col = 1; col <= 40; col += 1) sheet.getRow(row).getCell(col).value = "";
+    sheet.getRow(row).getCell(38).value = "";
+    sheet.getRow(row).getCell(39).value = "";
+    sheet.getRow(row).getCell(40).value = "";
+  }
+}
+
+function checklistDefectsText(record) {
+  return Array.isArray(record.defectos) && record.defectos.length
+    ? record.defectos.map(reportDefectText).join(" / ")
+    : "";
+}
+
+function clearChecklistSystemObservations(sheet) {
+  sheet.getCell("A50").value = "";
+  sheet.getCell("A51").value = "";
+  sheet.getCell("A52").value = "";
+  sheet.getCell("E50").value = "";
+  sheet.getCell("E51").value = "";
+}
+
+function prepareChecklistObservationCells(sheet, rowNumber, text) {
+  const row = sheet.getRow(rowNumber);
+  const observation = row.getCell(39);
+  const extraObservation = row.getCell(40);
+  if (!observation.isMerged && !extraObservation.isMerged) sheet.mergeCells(rowNumber, 39, rowNumber, 40);
+  observation.alignment = { horizontal: "left", vertical: "middle", wrapText: true };
+  observation.font = { ...(observation.font || {}), size: 8 };
+  if (text) {
+    row.height = Math.max(row.height || 20.25, text.length > 70 ? 42 : text.length > 38 ? 32 : 24);
+  }
+}
+
+function fillChecklistSheet(sheet, title, rows) {
+  sheet.getCell("C2").value = title;
+  clearChecklistRows(sheet);
+  clearChecklistSystemObservations(sheet);
+  rows.forEach((record, index) => {
+    const row = sheet.getRow(8 + index);
+    const rowNumber = 8 + index;
+    const fabricationYear = parseYear(record.fechaFabricacion);
+    const defectsText = checklistDefectsText(record);
+    row.getCell(1).value = safeText(record.cantidad);
+    row.getCell(2).value = safeText(record.numeroSerie);
+    row.getCell(3).value = safeText(record.modelo);
+    row.getCell(4).value = "";
+    row.getCell(5).value = safeText(record.fechaFabricacion);
+    row.getCell(6).value = safeText(record.fechaProximoRetimbrado);
+    row.getCell(7).value = checklistOperation(record);
+    row.getCell(8).value = fabricationYear ? String(fabricationYear + 20) : "";
+    row.getCell(38).value = safeText(record.ubicacion);
+    row.getCell(39).value = defectsText;
+    prepareChecklistObservationCells(sheet, rowNumber, defectsText);
   });
 }
 
-$('startBtn').onclick = async () => {
-  const client = $('client').value.trim(), operator = $('operator').value.trim();
-  if (!client || !operator) return toast('Escribe el cliente y el operario');
-  currentJob = { id: createId(), client, operator, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString(), equipment:[] };
-  renderWork(); showView('workView');
-  try { await saveJob(currentJob); } catch { toast('La revisión ha comenzado, pero el historial no está disponible en este navegador'); }
-};
-$('photosBtn').onclick = () => showView('photoTypesView');
-$('photoExtinguisherBtn').onclick = () => openPhotoForm('hidrante');
-$('photoBieBtn').onclick = () => openPhotoForm('armario');
-$('viewPhotoRecords').onclick = openPhotoRecords;
-$('photoNumberFilter').addEventListener('input', renderPhotoRecords);
-$('downloadPhotoRecordsExcel').onclick = generatePhotoRecordsExcel;
-$('photoRecordsBody').onclick = event => {
-  const button = event.target.closest('.view-record');
-  if (button) openPhotoRecordDetail(button.dataset.recordId);
-};
-$('editPhotoRecord').onclick = () => {
-  if (!selectedPhotoRecord) return;
-  openPhotoForm(selectedPhotoRecord.type, selectedPhotoRecord);
-};
-$('deletePhotoRecord').onclick = async () => {
-  if (!selectedPhotoRecord) return;
-  const label = `${photoTypeLabel(selectedPhotoRecord.type).singular} ${selectedPhotoRecord.number}`;
-  if (!confirm(`¿Eliminar definitivamente el registro de ${label}? También se borrarán sus fotografías.`)) return;
-  try {
-    await removePhotoRecord(selectedPhotoRecord.id);
-    photoRecordsCache = photoRecordsCache.filter(record => record.id !== selectedPhotoRecord.id);
-    selectedPhotoRecord = null;
-    renderPhotoRecords(); showView('photoRecordsView');
-    toast('Registro eliminado');
-  } catch { toast('No se pudo eliminar el registro'); }
-};
-document.querySelectorAll('.record-photo-input').forEach(input => input.onchange = event => readRecordPhoto(event.target));
-[0, 1].forEach(index => {
-  $(`deleteRecordPhoto${index}`).onclick = () => {
-    photoRecordPhotos[index] = '';
-    $(`photoRecordFile${index}`).value = '';
-    refreshRecordPhotoPreviews();
-    toast(`Foto ${index + 1} eliminada`);
-  };
-});
-$('photoRecordForm').onsubmit = async event => {
-  event.preventDefault();
-  const previous = editingPhotoRecordId ? photoRecordsCache.find(record => record.id === editingPhotoRecordId) : null;
-  const record = {
-    id: editingPhotoRecordId || createId(), type: currentPhotoType,
-    building: $('photoBuilding').value.trim(), number: $('photoNumber').value.trim(),
-    other1: $('photoOther1').value.trim(), other2: $('photoOther2').value.trim(), other3: $('photoOther3').value.trim(),
-    defects: [...document.querySelectorAll('input[name="photoDefect"]:checked')].map(input => input.value),
-    observation: $('photoObservation').value.trim(),
-    photos: [...photoRecordPhotos], createdAt: previous?.createdAt || new Date().toISOString(), updatedAt: new Date().toISOString()
-  };
-  try {
-    await savePhotoRecord(record);
-    if (editingPhotoRecordId) {
-      selectedPhotoRecord = record;
-      photoRecordsCache = photoRecordsCache.map(item => item.id === record.id ? record : item);
-      renderPhotoRecords();
-      openPhotoRecordDetail(record.id);
-      toast('Registro modificado');
-    } else {
-      showView('photoTypesView');
-      toast(`Ficha de ${photoTypeLabel(currentPhotoType).singular.toLowerCase()} guardada en el móvil`);
-    }
-    editingPhotoRecordId = '';
-  } catch { toast('No se pudo guardar la ficha en este dispositivo'); }
-};
-$('addBtn').onclick = () => openForm();
-$('importBtn').onclick = () => { $('importText').value = ''; showView('importView'); };
-$('copyImportPrompt').onclick = async () => {
-  try { await navigator.clipboard.writeText(CHATGPT_IMPORT_PROMPT); toast('Instrucciones copiadas. Pégalas en ChatGPT.'); }
-  catch { $('importText').value = CHATGPT_IMPORT_PROMPT; $('importText').select(); toast('Copia el texto seleccionado y pégalo en ChatGPT'); }
-};
-$('processImport').onclick = async () => {
-  try {
-    const imported = parseChatGPTImport($('importText').value);
-    const available = Math.max(0, 46 - currentJob.equipment.length);
-    if (!available) return toast('La plantilla ya tiene el máximo de 46 extintores');
-    const accepted = imported.slice(0, available);
-    currentJob.equipment.push(...accepted);
-    currentJob.updatedAt = new Date().toISOString();
-    try { await saveJob(currentJob); } catch {}
-    renderWork(); showView('workView');
-    toast(`${accepted.length} extintor${accepted.length === 1 ? '' : 'es'} importado${accepted.length === 1 ? '' : 's'}. Revisa los datos.`);
-  } catch (error) { toast(error instanceof SyntaxError ? 'El formato no es válido. Pide a ChatGPT que devuelva solamente el JSON.' : error.message); }
-};
-['manufactureMonth','manufactureYear','retestMonth','retestYear'].forEach(id => $(id).addEventListener('change', syncDateFields));
-$('equipmentForm').onsubmit = async event => {
-  event.preventDefault();
-  const item = equipmentFromForm();
-  if (!item.expiry) return toast('La fecha de fabricación debe ser MM-AAAA');
-  if (editingIndex >= 0) currentJob.equipment[editingIndex] = item; else currentJob.equipment.push(item);
-  currentJob.updatedAt = new Date().toISOString(); await saveJob(currentJob); renderWork(); showView('workView'); toast('Extintor guardado');
-};
-$('deleteEquipment').onclick = async () => {
-  if (!confirm('¿Eliminar este extintor?')) return;
-  currentJob.equipment.splice(editingIndex, 1); currentJob.updatedAt = new Date().toISOString(); await saveJob(currentJob); renderWork(); showView('workView');
-};
-$('labelPhoto').onchange = event => readPhoto(event.target, data => pendingPhotos.label = data);
-document.querySelectorAll('.equipment-photo').forEach(input => input.onchange = event => readPhoto(event.target, data => pendingPhotos.equipment[Number(input.dataset.index)] = data));
-$('dictateLabel').onclick = () => startRecognition($('dictateLabel'), parseDictation);
-$('dictatePlate').onclick = () => startRecognition($('dictatePlate'), text => {
-  const digits = text.replace(/\D/g, '');
-  if (!digits) return toast('No he entendido el número de placa');
-  $('plate').value = digits; toast('Número de placa recibido');
-});
-document.querySelectorAll('.observation .mic').forEach(button => button.onclick = () => startRecognition(button, text => { const target=$(button.dataset.target); target.value = target.value ? `${target.value} ${text}` : text; }));
-$('downloadBtn').onclick = () => generateExcel(currentJob);
-$('finishBtn').onclick = async () => { currentJob.updatedAt = new Date().toISOString(); await saveJob(currentJob); await renderHistory(); showView('homeView'); toast('Trabajo guardado en el historial'); };
-$('historyBtn').onclick = () => showView('historyView');
-document.querySelectorAll('[data-view]').forEach(button => button.onclick = () => { if (button.dataset.view === 'workView' && currentJob) renderWork(); showView(button.dataset.view); });
+function safeSheetName(value, index) {
+  const name = safeText(value).replace(/[\\/*?:[\]]/g, " ").replace(/\s+/g, " ").trim() || `Checklist ${index}`;
+  return name.slice(0, 25) + (index > 1 ? ` ${index}` : "");
+}
 
-window.addEventListener('beforeinstallprompt', event => { event.preventDefault(); deferredInstall = event; $('installBtn').classList.remove('hidden'); });
-$('installBtn').onclick = async () => { if (!deferredInstall) return; deferredInstall.prompt(); await deferredInstall.userChoice; deferredInstall = null; $('installBtn').classList.add('hidden'); };
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js');
-initializeDateSelectors();
-renderHistory().catch(() => { $('historyCount').textContent = '—'; });
+async function downloadChecklist() {
+  if (!window.ExcelJS) return alert("No se ha cargado el generador de Excel.");
+  const pages = buildChecklistPages();
+  if (!pages.length) return alert("No hay registros para generar el checklist.");
+
+  const response = await fetch(CHECKLIST_TEMPLATE_URL);
+  if (!response.ok) return alert("No se ha podido cargar la plantilla del checklist.");
+
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(await response.arrayBuffer());
+  const templateSheet = workbook.worksheets[0];
+  const sheets = pages.map((page, index) => {
+    const sheet = index === 0 ? templateSheet : copyTemplateSheet(workbook, templateSheet, safeSheetName(page.title, index + 1));
+    sheet.name = safeSheetName(page.title, index + 1);
+    return { sheet, page };
+  });
+
+  sheets.forEach(({ sheet, page }) => fillChecklistSheet(sheet, page.title, page.records));
+
+  const blob = new Blob([await workbook.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `Checklist_extintores_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function renderDefects(selected = []) {
+  const box = $("defectsList");
+  box.innerHTML = "";
+  const type = equipmentTypeKey($("modelo")?.value || "Hidrante");
+  const options = DEFECTS_BY_TYPE[type] || DEFECTS_BY_TYPE.hidrante;
+  for (const option of options) {
+    const label = document.createElement("label");
+    label.className = "checkItem";
+    label.innerHTML = `<input type="checkbox" value="${option}"><span>${option}</span>`;
+    label.querySelector("input").checked = selected.includes(option);
+    box.appendChild(label);
+  }
+}
+
+function setPhotoPreview(index, dataUrl) {
+  const photo = safeText(dataUrl);
+  const img = $(`photoPreview${index + 1}`);
+  const text = $(`photoBox${index + 1}`).querySelector("span");
+  currentPhotos[index] = photo;
+  img.src = photo;
+  img.classList.toggle("hidden", !photo);
+  text.classList.toggle("hidden", Boolean(photo));
+  $(`deletePhoto${index + 1}`).disabled = !photo;
+}
+
+function updateLastNumberUsed(currentId = "") {
+  const savedNumber = localStorage.getItem(LAST_NUMBER_KEY);
+  const lastRecord = records.find((record) => record.id !== currentId && safeText(record.cantidad).trim());
+  const value = safeText(savedNumber).trim() || safeText(lastRecord?.cantidad).trim() || "-";
+  $("lastNumberUsed").textContent = value;
+}
+
+function normalizeSpeechText(text) {
+  return safeText(text)
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[.,;:!?¿¡]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function spokenDigit(token) {
+  const digits = {
+    cero: "0",
+    uno: "1",
+    un: "1",
+    una: "1",
+    dos: "2",
+    tres: "3",
+    cuatro: "4",
+    cinco: "5",
+    seis: "6",
+    siete: "7",
+    ocho: "8",
+    nueve: "9",
+  };
+  return digits[token] || (/^\d+$/.test(token) ? token : "");
+}
+
+function speechToNumberValue(text) {
+  const normalized = normalizeSpeechText(text);
+  const numericParts = normalized.match(/\d+/g);
+  if (numericParts?.length) return numericParts.join("");
+
+  const tokens = normalized.split(" ").filter((token) => token && token !== "y");
+  const compactDigits = tokens.map(spokenDigit).join("");
+  if (compactDigits && tokens.every((token) => spokenDigit(token))) return compactDigits;
+
+  const values = {
+    cero: 0,
+    uno: 1,
+    un: 1,
+    una: 1,
+    dos: 2,
+    tres: 3,
+    cuatro: 4,
+    cinco: 5,
+    seis: 6,
+    siete: 7,
+    ocho: 8,
+    nueve: 9,
+    diez: 10,
+    once: 11,
+    doce: 12,
+    trece: 13,
+    catorce: 14,
+    quince: 15,
+    dieciseis: 16,
+    diecisiete: 17,
+    dieciocho: 18,
+    diecinueve: 19,
+    veinte: 20,
+    veintiuno: 21,
+    veintidos: 22,
+    veintitres: 23,
+    veinticuatro: 24,
+    veinticinco: 25,
+    veintiseis: 26,
+    veintisiete: 27,
+    veintiocho: 28,
+    veintinueve: 29,
+    treinta: 30,
+    cuarenta: 40,
+    cincuenta: 50,
+    sesenta: 60,
+    setenta: 70,
+    ochenta: 80,
+    noventa: 90,
+    cien: 100,
+    ciento: 100,
+    doscientos: 200,
+    trescientos: 300,
+    cuatrocientos: 400,
+    quinientos: 500,
+    seiscientos: 600,
+    setecientos: 700,
+    ochocientos: 800,
+    novecientos: 900,
+  };
+
+  let total = 0;
+  let current = 0;
+  let found = false;
+  for (const token of tokens) {
+    if (token === "mil") {
+      total += (current || 1) * 1000;
+      current = 0;
+      found = true;
+      continue;
+    }
+    if (values[token] === undefined) continue;
+    current += values[token];
+    found = true;
+  }
+
+  return found ? String(total + current) : speechToPlainValue(text).replace(/\s+/g, "");
+}
+
+function speechToSerial(text) {
+  const tokens = normalizeSpeechText(text).split(" ").filter(Boolean);
+  const parts = tokens.map((token) => spokenDigit(token) || token.toUpperCase());
+  return parts.join("").replace(/[^A-Z0-9-]/g, "");
+}
+
+function speechToPlainValue(text) {
+  const digitWords = {
+    cero: "0",
+    uno: "1",
+    un: "1",
+    una: "1",
+    dos: "2",
+    tres: "3",
+    cuatro: "4",
+    cinco: "5",
+    seis: "6",
+    siete: "7",
+    ocho: "8",
+    nueve: "9",
+  };
+  return normalizeSpeechText(text)
+    .split(" ")
+    .filter(Boolean)
+    .map((token) => digitWords[token] || token.toUpperCase())
+    .join(" ")
+    .replace(/\bKG\b/g, "KG")
+    .trim();
+}
+
+function speechToModel(text) {
+  const normalized = normalizeSpeechText(text);
+  const compactDigits = normalized
+    .split(" ")
+    .map(spokenDigit)
+    .join("");
+  const numeric = normalized.match(/\b\d+\b/)?.[0] || compactDigits || speechToNumberValue(text);
+  const models = {
+    1: "ABC 1 KG",
+    2: "CO2 2 KG",
+    3: "ABC 3 KG",
+    5: "CO2 5 KG",
+    6: "ABC 6 KG",
+    9: "ABC 9 KG",
+    10: "CO2 10 KG",
+    25: "ABC 25 KG",
+    50: "ABC 50 KG",
+  };
+  return models[numeric] || speechToPlainValue(text);
+}
+
+function speechToYear(text) {
+  const normalized = normalizeSpeechText(text);
+  const numeric = normalized.match(/\b(19|20)\d{2}\b/);
+  if (numeric) return numeric[0];
+
+  const parsedNumber = Number(speechToNumberValue(text));
+  if (Number.isFinite(parsedNumber)) {
+    if (parsedNumber >= 1900 && parsedNumber <= 2099) return String(parsedNumber);
+    if (parsedNumber >= 0 && parsedNumber <= 99) return String(2000 + parsedNumber);
+  }
+
+  const compactDigits = normalized
+    .split(" ")
+    .map(spokenDigit)
+    .join("");
+  if (/^(19|20)\d{2}$/.test(compactDigits)) return compactDigits;
+
+  const yearWords = {
+    diez: 2010,
+    once: 2011,
+    doce: 2012,
+    trece: 2013,
+    catorce: 2014,
+    quince: 2015,
+    dieciseis: 2016,
+    diecisiete: 2017,
+    dieciocho: 2018,
+    diecinueve: 2019,
+    veinte: 2020,
+    veintiuno: 2021,
+    veintidos: 2022,
+    veintitres: 2023,
+    veinticuatro: 2024,
+    veinticinco: 2025,
+    veintiseis: 2026,
+  };
+  for (const [word, year] of Object.entries(yearWords)) {
+    if (normalized.includes(word)) return String(year);
+  }
+  return speechToPlainValue(text);
+}
+
+function setSelectValue(id, value) {
+  const select = $(id);
+  const cleanValue = safeText(value).trim();
+  const option = Array.from(select.options).find((item) => item.value === cleanValue);
+  if (option) {
+    select.value = cleanValue;
+    return;
+  }
+  if (/^\d{4}$/.test(cleanValue)) {
+    select.add(new Option(cleanValue, cleanValue));
+    select.value = cleanValue;
+    return;
+  }
+  select.value = "";
+}
+
+function setVoiceStatus(message) {
+  const status = $("voiceStatus");
+  if (status) status.textContent = message;
+}
+
+function appendSerial(value) {
+  const serial = speechToSerial(value);
+  if (!serial) return;
+  $("numeroSerie").value = `${$("numeroSerie").value}${serial}`.trim();
+}
+
+function captureAfterKeyword(text, keyword) {
+  const normalized = normalizeSpeechText(text);
+  const index = normalized.indexOf(keyword);
+  if (index < 0) return "";
+  return normalized.slice(index + keyword.length).trim();
+}
+
+function handleVoiceText(text) {
+  const normalized = normalizeSpeechText(text);
+  if (!normalized) return;
+
+  if (voiceStep === "numero") {
+    const numberValue = captureAfterKeyword(text, "numero");
+    if (!numberValue && !normalized.includes("numero")) {
+      setVoiceStatus('Di "numero" y despues el numero del extintor.');
+      return;
+    }
+    if (numberValue) $("cantidad").value = speechToNumberValue(numberValue);
+    voiceStep = "modelo";
+    setVoiceStatus('Numero anotado. Ahora di "modelo" y el modelo del extintor.');
+    return;
+  }
+
+  if (voiceStep === "modelo") {
+    const modelValue = captureAfterKeyword(text, "modelo");
+    if (!modelValue && !normalized.includes("modelo")) {
+      setVoiceStatus('Di "modelo" y el modelo del extintor.');
+      return;
+    }
+    if (modelValue) {
+      $("modelo").value = speechToModel(modelValue);
+      voiceStep = "serie";
+      setVoiceStatus('Modelo anotado. Ahora di "serie" y dicta el numero de serie, numero a numero.');
+    } else {
+      voiceStep = "modeloValor";
+      setVoiceStatus("Ahora di el modelo del extintor.");
+    }
+    return;
+  }
+
+  if (voiceStep === "modeloValor") {
+    $("modelo").value = speechToModel(text);
+    voiceStep = "serie";
+    setVoiceStatus('Modelo anotado. Ahora di "serie" y dicta el numero de serie, numero a numero.');
+    return;
+  }
+
+  if (voiceStep === "serie") {
+    const serieValue = captureAfterKeyword(text, "serie");
+    if (!serieValue && !normalized.includes("serie")) {
+      setVoiceStatus('Di "serie" y despues el numero de serie.');
+      return;
+    }
+    if (serieValue) {
+      appendSerial(serieValue);
+      voiceStep = "numeroSerie";
+      setVoiceStatus('Numero de serie anotado. Cuando termines di "fabricacion" y la fecha.');
+    } else {
+      voiceStep = "numeroSerie";
+      setVoiceStatus("Ahora dicta el numero de serie, numero a numero.");
+    }
+    return;
+  }
+
+  if (voiceStep === "numeroSerie") {
+    const fabricationIndex = normalized.indexOf("fabricacion");
+    if (fabricationIndex >= 0) {
+      const before = normalized.slice(0, fabricationIndex).trim();
+      const after = normalized.slice(fabricationIndex + "fabricacion".length).trim();
+      if (before) appendSerial(before);
+      if (after) setSelectValue("fechaFabricacion", speechToYear(after));
+      voiceStep = after ? "retimbrado" : "fabricacionValor";
+      setVoiceStatus(after ? 'Fabricacion anotada. Ahora di "retimbrado" y la fecha.' : "Ahora di la fecha de fabricacion.");
+      return;
+    }
+    appendSerial(text);
+    setVoiceStatus('Numero de serie anotado. Cuando termines di "fabricacion" y la fecha.');
+    return;
+  }
+
+  if (voiceStep === "fabricacionValor") {
+    setSelectValue("fechaFabricacion", speechToYear(text));
+    voiceStep = "retimbrado";
+    setVoiceStatus('Fabricacion anotada. Ahora di "retimbrado" y la fecha.');
+    return;
+  }
+
+  if (voiceStep === "retimbrado") {
+    const retimbradoValue = captureAfterKeyword(text, "retimbrado");
+    if (!retimbradoValue && !normalized.includes("retimbrado")) {
+      setVoiceStatus('Di "retimbrado" y la fecha de retimbrado.');
+      return;
+    }
+    if (!retimbradoValue) {
+      voiceStep = "retimbradoValor";
+      setVoiceStatus("Ahora di la fecha de retimbrado.");
+      return;
+    }
+    setSelectValue("fechaProximoRetimbrado", speechToYear(retimbradoValue));
+    voiceStep = "completo";
+    stopVoiceInput(false);
+    setVoiceStatus("Datos de voz anotados. Revisa o completa manualmente y pulsa Guardar.");
+    return;
+  }
+
+  if (voiceStep === "retimbradoValor") {
+    setSelectValue("fechaProximoRetimbrado", speechToYear(text));
+    voiceStep = "completo";
+    stopVoiceInput(false);
+    setVoiceStatus("Datos de voz anotados. Revisa o completa manualmente y pulsa Guardar.");
+  }
+}
+
+function getSpeechRecognition() {
+  return window.SpeechRecognition || window.webkitSpeechRecognition || null;
+}
+
+function setSycoVoiceStatus(message) {
+  const status = $("voiceSycoStatus");
+  if (status) status.textContent = message;
+}
+
+function extractSycoVoiceDigits(text) {
+  const normalized = normalizeSpeechText(text).replace(/\bok\b/g, " ").trim();
+  if (!normalized) return "";
+  return speechToNumberValue(normalized).replace(/\D/g, "");
+}
+
+function finishSycoVoiceInput(showMessage = true) {
+  sycoVoiceActive = false;
+  if (sycoVoiceRecognition) {
+    try {
+      sycoVoiceRecognition.stop();
+    } catch {}
+  }
+  const value = sycoVoiceDraft || sycoVoiceParts.join("");
+  if (value) $("cantidad").value = value;
+  $("voiceSycoBtn").disabled = false;
+  $("voiceSycoBtn").textContent = "Dictar";
+  if (showMessage) setSycoVoiceStatus(value ? `Número anotado: ${value}` : "No se ha reconocido ningún número.");
+}
+
+function handleSycoVoiceText(text) {
+  const normalized = normalizeSpeechText(text);
+  const hasOk = /\bok\b/.test(normalized);
+  const digits = extractSycoVoiceDigits(text);
+  if (digits) {
+    sycoVoiceParts.push(digits);
+    sycoVoiceDraft = `${sycoVoiceDraft}${digits}`;
+    $("cantidad").value = sycoVoiceDraft;
+  }
+  const preview = sycoVoiceDraft || sycoVoiceParts.join("");
+  setSycoVoiceStatus(preview ? `Escuchando: ${preview}. Di ok para terminar.` : "Escuchando. Di cifras y termina con ok.");
+  if (hasOk) finishSycoVoiceInput(true);
+}
+
+function startSycoVoiceInput() {
+  if (sycoVoiceActive) {
+    finishSycoVoiceInput();
+    return;
+  }
+  const SpeechRecognition = getSpeechRecognition();
+  if (!SpeechRecognition) {
+    setSycoVoiceStatus("Este navegador no permite voz. Prueba con Chrome o Edge.");
+    return;
+  }
+  stopVoiceInput(false);
+  if (serieVoiceActive) finishSerieVoiceInput(false);
+  sycoVoiceParts = [];
+  sycoVoiceDraft = "";
+  $("cantidad").value = "";
+  sycoVoiceActive = true;
+  sycoVoiceRecognition = new SpeechRecognition();
+  sycoVoiceRecognition.lang = "es-ES";
+  sycoVoiceRecognition.continuous = true;
+  sycoVoiceRecognition.interimResults = false;
+  sycoVoiceRecognition.onresult = (event) => {
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      if (event.results[index].isFinal) handleSycoVoiceText(event.results[index][0].transcript);
+    }
+  };
+  sycoVoiceRecognition.onerror = () => setSycoVoiceStatus("No he podido escuchar bien. Pulsa Dictar otra vez.");
+  sycoVoiceRecognition.onend = () => {
+    if (sycoVoiceActive) {
+      try {
+        sycoVoiceRecognition.start();
+      } catch {}
+      return;
+    }
+    $("voiceSycoBtn").disabled = false;
+    $("voiceSycoBtn").textContent = "Dictar";
+  };
+  $("voiceSycoBtn").disabled = false;
+  $("voiceSycoBtn").textContent = "Parar";
+  setSycoVoiceStatus("Escuchando. Di cifras y termina con ok.");
+  sycoVoiceRecognition.start();
+}
+
+function setSerieVoiceStatus(message) {
+  const status = $("voiceSerieStatus");
+  if (status) status.textContent = message;
+}
+
+function extractSerieVoiceDigits(text) {
+  const normalized = normalizeSpeechText(text).replace(/\bok\b/g, " ").trim();
+  if (!normalized) return "";
+  return speechToNumberValue(normalized).replace(/\D/g, "");
+}
+
+function finishSerieVoiceInput(showMessage = true) {
+  serieVoiceActive = false;
+  if (serieVoiceRecognition) {
+    try {
+      serieVoiceRecognition.stop();
+    } catch {}
+  }
+  const value = serieVoiceDraft || serieVoiceParts.join("");
+  if (value) $("numeroSerie").value = value;
+  $("voiceSerieBtn").disabled = false;
+  $("voiceSerieBtn").textContent = "Dictar";
+  if (showMessage) setSerieVoiceStatus(value ? `Serie anotada: ${value}` : "No se ha reconocido ningun numero de serie.");
+}
+
+function handleSerieVoiceText(text) {
+  const normalized = normalizeSpeechText(text);
+  const hasOk = /\bok\b/.test(normalized);
+  const digits = extractSerieVoiceDigits(text);
+  if (digits) {
+    serieVoiceParts.push(digits);
+    serieVoiceDraft = `${serieVoiceDraft}${digits}`;
+    $("numeroSerie").value = serieVoiceDraft;
+  }
+  const preview = serieVoiceDraft || serieVoiceParts.join("");
+  setSerieVoiceStatus(preview ? `Escuchando: ${preview}. Di ok para terminar.` : "Escuchando. Di cifras y termina con ok.");
+  if (hasOk) finishSerieVoiceInput(true);
+}
+
+function startSerieVoiceInput() {
+  if (serieVoiceActive) {
+    finishSerieVoiceInput();
+    return;
+  }
+  const SpeechRecognition = getSpeechRecognition();
+  if (!SpeechRecognition) {
+    setSerieVoiceStatus("Este navegador no permite voz. Prueba con Chrome o Edge.");
+    return;
+  }
+  stopVoiceInput(false);
+  if (sycoVoiceActive) finishSycoVoiceInput(false);
+  serieVoiceParts = [];
+  serieVoiceDraft = "";
+  $("numeroSerie").value = "";
+  serieVoiceActive = true;
+  serieVoiceRecognition = new SpeechRecognition();
+  serieVoiceRecognition.lang = "es-ES";
+  serieVoiceRecognition.continuous = true;
+  serieVoiceRecognition.interimResults = false;
+  serieVoiceRecognition.onresult = (event) => {
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      if (event.results[index].isFinal) handleSerieVoiceText(event.results[index][0].transcript);
+    }
+  };
+  serieVoiceRecognition.onerror = () => setSerieVoiceStatus("No he podido escuchar bien. Pulsa Dictar otra vez.");
+  serieVoiceRecognition.onend = () => {
+    if (serieVoiceActive) {
+      try {
+        serieVoiceRecognition.start();
+      } catch {}
+      return;
+    }
+    $("voiceSerieBtn").disabled = false;
+    $("voiceSerieBtn").textContent = "Dictar";
+  };
+  $("voiceSerieBtn").disabled = false;
+  $("voiceSerieBtn").textContent = "Parar";
+  setSerieVoiceStatus("Escuchando. Di cifras y termina con ok.");
+  serieVoiceRecognition.start();
+}
+
+function startVoiceInput() {
+  const SpeechRecognition = getSpeechRecognition();
+  if (!SpeechRecognition) {
+    setVoiceStatus("Este navegador no permite reconocimiento de voz. Prueba con Chrome o Edge.");
+    return;
+  }
+
+  if (sycoVoiceActive) finishSycoVoiceInput(false);
+  if (serieVoiceActive) finishSerieVoiceInput(false);
+  if (voiceRecognition) voiceRecognition.stop();
+  voiceStep = "numero";
+  voiceActive = true;
+  voiceRecognition = new SpeechRecognition();
+  voiceRecognition.lang = "es-ES";
+  voiceRecognition.continuous = true;
+  voiceRecognition.interimResults = false;
+  voiceRecognition.onresult = (event) => {
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      if (event.results[index].isFinal) handleVoiceText(event.results[index][0].transcript);
+    }
+  };
+  voiceRecognition.onerror = () => setVoiceStatus("No he podido escuchar bien. Puedes parar e iniciar voz de nuevo.");
+  voiceRecognition.onend = () => {
+    if (voiceActive && voiceStep !== "completo") {
+      try {
+        voiceRecognition.start();
+      } catch {}
+      return;
+    }
+    $("voiceStartBtn").disabled = false;
+    $("voiceStopBtn").disabled = true;
+    $("recordForm").classList.remove("voiceListening");
+  };
+  $("voiceStartBtn").disabled = true;
+  $("voiceStopBtn").disabled = false;
+  $("recordForm").classList.add("voiceListening");
+  setVoiceStatus('Escuchando. Empieza diciendo "numero" y el dato.');
+  voiceRecognition.start();
+}
+
+function stopVoiceInput(showMessage = true) {
+  voiceActive = false;
+  if (voiceRecognition) {
+    try {
+      voiceRecognition.stop();
+    } catch {}
+  }
+  $("voiceStartBtn").disabled = false;
+  $("voiceStopBtn").disabled = true;
+  $("recordForm").classList.remove("voiceListening");
+  if (showMessage) setVoiceStatus("Voz parada. Puedes revisar o completar los campos manualmente.");
+}
+
+function resizePhoto(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const maxSide = 1200;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL("image/jpeg", 0.72));
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function openForm(id = null) {
+  const record = id ? records.find((item) => item.id === id) : null;
+  $("recordId").value = record?.id || "";
+  updateLastNumberUsed(record?.id || "");
+  $("formTitle").textContent = record ? "Ver y corregir equipo" : "Meter dato nuevo";
+  $("formKicker").textContent = record ? "REGISTRO EXISTENTE" : "NUEVO REGISTRO";
+  $("deleteBtn").classList.toggle("hidden", !record);
+  for (const key of fields) $(key).value = safeText(record?.[key]);
+  $("visto").checked = Boolean(record?.visto);
+  renderDefects(record?.defectos || []);
+  const photos = Array.isArray(record?.photos) ? record.photos : ["", ""];
+  setPhotoPreview(0, photos[0]);
+  setPhotoPreview(1, photos[1]);
+  showView("form");
+}
+
+function collectForm() {
+  const record = { id: $("recordId").value || createId(), origen: $("recordId").value ? "editado" : "manual" };
+  for (const key of fields) record[key] = $(key).value.trim();
+  record.defectos = Array.from($("defectsList").querySelectorAll("input:checked")).map((input) => input.value);
+  record.photos = [currentPhotos[0] || "", currentPhotos[1] || ""];
+  record.visto = $("visto").checked;
+  return cleanRecord(record);
+}
+
+async function saveForm(event) {
+  event.preventDefault();
+  const record = collectForm();
+  const isNewRecord = !$("recordId").value;
+  const index = records.findIndex((item) => item.id === record.id);
+  if (index >= 0) records[index] = record;
+  else records.unshift(record);
+  if (record.cantidad) localStorage.setItem(LAST_NUMBER_KEY, record.cantidad);
+  await saveRecords();
+  if (isNewRecord) openForm();
+  else showView("list");
+}
+
+async function deleteCurrent() {
+  const id = $("recordId").value;
+  if (!id) return;
+  if (!confirm("¿Seguro que quieres eliminar este registro?")) return;
+  records = records.filter((record) => record.id !== id);
+  await saveRecords();
+  showView("list");
+}
+
+async function clearAllRecords() {
+  if (!records.length) {
+    alert("No hay registros para eliminar.");
+    return;
+  }
+  if (!confirm("¿Seguro que quieres eliminar todos los registros guardados en este dispositivo?")) return;
+  records = [];
+  localStorage.removeItem(LAST_NUMBER_KEY);
+  await saveRecords();
+  renderTable();
+  showView("home");
+  alert("Registros eliminados. Ya puedes importar otro cliente.");
+}
+
+function mergeImportedIntoExisting(existing, imported) {
+  let changed = false;
+  for (const key of fields) {
+    if (!safeText(existing[key]).trim() && safeText(imported[key]).trim()) {
+      existing[key] = imported[key];
+      changed = true;
+    }
+  }
+  const mergedDefects = normalizeDefects([...(existing.defectos || []), ...(imported.defectos || [])]);
+  if (mergedDefects.length !== (existing.defectos || []).length) {
+    existing.defectos = mergedDefects;
+    changed = true;
+  }
+  if (imported.visto && !existing.visto) {
+    existing.visto = true;
+    changed = true;
+  }
+  const existingPhotos = Array.isArray(existing.photos) ? existing.photos : ["", ""];
+  const importedPhotos = Array.isArray(imported.photos) ? imported.photos : ["", ""];
+  for (let index = 0; index < 2; index += 1) {
+    if (!existingPhotos[index] && importedPhotos[index]) {
+      existingPhotos[index] = importedPhotos[index];
+      changed = true;
+    }
+  }
+  existing.photos = existingPhotos;
+  return changed;
+}
+
+async function importExcelFile(file) {
+  if (!window.ExcelJS) return alert("No se ha cargado el lector de Excel.");
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(await file.arrayBuffer());
+  const sheet = workbook.worksheets[0];
+  if (!sheet) return alert("No encuentro ninguna hoja en ese Excel.");
+  const imported = [];
+  const knownRecords = new Map(records.map((record) => [recordKey(record), record]).filter(([key]) => key !== "||"));
+  let skippedDuplicates = 0;
+  let updatedDuplicates = 0;
+  const headerMap = buildHeaderMap(sheet.getRow(1).values);
+  const photosByRow = importedPhotosByRow(workbook, sheet, headerMap);
+  sheet.eachRow((row, rowNumber) => {
+    if (rowNumber === 1) return;
+    const record = rowToImportedRecord(row.values, rowNumber, headerMap);
+    record.photos = photosByRow.get(rowNumber) || ["", ""];
+    const hasData = [record.edificio, record.cantidad, record.ubicacion, record.modelo, record.numeroSerie].some((value) => safeText(value).trim());
+    if (!hasData) return;
+    const key = recordKey(record);
+    if (key !== "||" && knownRecords.has(key)) {
+      skippedDuplicates += 1;
+      if (mergeImportedIntoExisting(knownRecords.get(key), record)) updatedDuplicates += 1;
+      return;
+    }
+    if (key !== "||") knownRecords.set(key, record);
+    imported.push(record);
+  });
+  if (!imported.length && !updatedDuplicates) {
+    const message = skippedDuplicates
+      ? `No se importaron registros nuevos. Ya existían ${skippedDuplicates} registros.`
+      : "No se encontraron registros para importar.";
+    $("importStatus").textContent = message;
+    return alert(message);
+  }
+  records = [...imported, ...records];
+  await saveRecords();
+  $("importStatus").textContent = `Importados ${imported.length} registros nuevos. Actualizados ${updatedDuplicates} existentes. Ya existían ${skippedDuplicates}.`;
+  alert(`Importación correcta.\nRegistros nuevos importados: ${imported.length}\nRegistros existentes actualizados: ${updatedDuplicates}\nRegistros ya existentes: ${skippedDuplicates}`);
+}
+
+function defectFlag(selected, defect) {
+  return selected.includes(defect) ? "Sí" : "";
+}
+
+async function downloadExcel() {
+  if (!window.ExcelJS) return alert("No se ha cargado el generador de Excel.");
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "Hidrantes";
+  workbook.created = new Date();
+  const sheet = workbook.addWorksheet("Hidrantes");
+  const columns = [
+    ["cliente", "Cliente", 22],
+    ["edificio", "Edificio", 20],
+    ["modelo", "Tipo", 16],
+    ["cantidad", "Número", 16],
+    ["ubicacion", "Ubicación", 34],
+    ["numeroSerie", "Otro 1", 18],
+    ["fechaFabricacion", "Otro 2", 18],
+    ["fechaProximoRetimbrado", "Otro 3", 18],
+    ["observaciones", "Observaciones", 34],
+    ["defectos", "Defectos encontrados", 42],
+    ...defectOptions.map((defect) => [`defecto_${normalizeHeader(defect)}`, defect.replace(/\.$/, ""), 22]),
+    ["foto1", "Foto 1", 22],
+    ["foto2", "Foto 2", 22],
+    ["visto", "Visto", 10],
+  ];
+  sheet.columns = columns.map(([key, header, width]) => ({ key, header, width }));
+  sheet.getRow(1).font = { bold: true, color: { argb: "FF3A1028" } };
+  sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF9A8D4" } };
+  sheet.getRow(1).alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+  sheet.getRow(1).height = 30;
+
+  for (const record of filteredRecords()) {
+    const selected = record.defectos || [];
+    const rowValues = {
+      ...record,
+      defectos: selected.join(" / "),
+      foto1: record.photos[0] ? "Foto 1" : "",
+      foto2: record.photos[1] ? "Foto 2" : "",
+      visto: record.visto ? "Sí" : "No",
+    };
+    for (const defect of defectOptions) rowValues[`defecto_${normalizeHeader(defect)}`] = defectFlag(selected, defect);
+    const row = sheet.addRow(rowValues);
+    if (record.photos[0] || record.photos[1]) row.height = 92;
+    [0, 1].forEach((photoIndex) => {
+      const photo = record.photos[photoIndex];
+      if (!photo) return;
+      const imageId = workbook.addImage({ base64: photo, extension: "jpeg" });
+      const col = columns.length - 3 + photoIndex;
+      sheet.addImage(imageId, { tl: { col, row: row.number - 1 }, ext: { width: 120, height: 85 }, editAs: "oneCell" });
+    });
+  }
+  sheet.views = [{ state: "frozen", ySplit: 1 }];
+  sheet.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: columns.length } };
+  sheet.eachRow((row, rowNumber) => {
+    row.eachCell((cell) => {
+      cell.border = {
+        top: { style: "thin", color: { argb: "FFE6E0DA" } },
+        left: { style: "thin", color: { argb: "FFE6E0DA" } },
+        bottom: { style: "thin", color: { argb: "FFE6E0DA" } },
+        right: { style: "thin", color: { argb: "FFE6E0DA" } },
+      };
+      cell.alignment = { vertical: "top", wrapText: true };
+      if (rowNumber > 1 && rowNumber % 2 === 0) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFAF8F5" } };
+    });
+  });
+  const blob = new Blob([await workbook.xlsx.writeBuffer()], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `Hidrantes_${new Date().toISOString().slice(0, 10)}.xlsx`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+function bindEvents() {
+  $("openListBtn").addEventListener("click", () => showView("list"));
+  $("openCorrectivosBtn").addEventListener("click", () => showView("correctivos"));
+  $("openChecklistBtn").addEventListener("click", () => showView("checklist"));
+  $("openRetimbradosBtn").addEventListener("click", () => showView("retimbrados"));
+  $("openCaducadosBtn").addEventListener("click", () => showView("caducados"));
+  $("openCaducadosFromRetimbradosBtn").addEventListener("click", () => showView("caducados"));
+  $("newRecordBtn").addEventListener("click", () => openForm());
+  $("newRecordFromListBtn").addEventListener("click", () => openForm());
+  $("downloadExcelBtn").addEventListener("click", downloadExcel);
+  $("downloadExcelFromTableBtn").addEventListener("click", downloadExcel);
+  $("downloadCorrectivosWordBtn").addEventListener("click", downloadCorrectivosWord);
+  $("downloadChecklistBtn").addEventListener("click", downloadChecklist);
+  $("downloadRetimbradosWordBtn").addEventListener("click", downloadRetimbradosWord);
+  $("downloadRetimbradosEconomicoWordBtn").addEventListener("click", downloadRetimbradosEconomicoWord);
+  $("downloadCaducadosWordBtn").addEventListener("click", downloadCaducadosWord);
+  $("downloadCaducadosEconomicoWordBtn").addEventListener("click", downloadCaducadosEconomicoWord);
+  $("clearRecordsBtn").addEventListener("click", clearAllRecords);
+  $("viewTableFromFormBtn").addEventListener("click", () => showView("list"));
+  $("voiceStartBtn").addEventListener("click", startVoiceInput);
+  $("voiceStopBtn").addEventListener("click", () => stopVoiceInput());
+  $("voiceSycoBtn").addEventListener("click", startSycoVoiceInput);
+  $("voiceSerieBtn").addEventListener("click", startSerieVoiceInput);
+  $("importExcelBtn").addEventListener("click", () => $("importExcelInput").click());
+  $("importExcelInput").addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      $("importStatus").textContent = "Importando Excel...";
+      await importExcelFile(file);
+      renderTable();
+    } catch (error) {
+      console.error(error);
+      $("importStatus").textContent = "No se ha podido importar el Excel.";
+      alert("No se ha podido importar el Excel. Revisa que tenga el mismo formato.");
+    } finally {
+      event.target.value = "";
+    }
+  });
+  ["filterEdificio", "filterNumero", "filterSerie", "sortOrder", "seenFilter"].forEach((id) => {
+    $(id).addEventListener("input", renderTable);
+    $(id).addEventListener("change", renderTable);
+  });
+  $("recordForm").addEventListener("submit", saveForm);
+  $("modelo").addEventListener("change", () => {
+    const selected = Array.from($("defectsList").querySelectorAll("input:checked")).map((input) => input.value);
+    renderDefects(selected);
+  });
+  $("deleteBtn").addEventListener("click", deleteCurrent);
+  [0, 1].forEach((index) => {
+    $(`photoInput${index + 1}`).addEventListener("change", async (event) => {
+      const file = event.target.files?.[0];
+      if (!file) return;
+      try {
+        setPhotoPreview(index, await resizePhoto(file));
+      } catch {
+        alert("No he podido cargar esa foto. Prueba con otra imagen.");
+      } finally {
+        event.target.value = "";
+      }
+    });
+    $(`deletePhoto${index + 1}`).addEventListener("click", () => setPhotoPreview(index, ""));
+  });
+  document.querySelectorAll("[data-back]").forEach((button) => button.addEventListener("click", () => showView(button.dataset.back)));
+}
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));
+}
+
+async function init() {
+  await loadRecords();
+  bindEvents();
+  updateStats();
+}
+
+init().catch((error) => {
+  console.error(error);
+  const main = document.querySelector("main");
+  if (!main) return;
+  const box = document.createElement("div");
+  box.className = "appError";
+  box.textContent = "No se ha podido iniciar la app. Actualiza la página o vuelve a subir todos los archivos.";
+  main.prepend(box);
+});
